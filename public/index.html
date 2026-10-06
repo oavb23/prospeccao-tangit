@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#16181b" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Prospecção" />
+  <title>Prospecção</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231f2a37'/%3E%3Ccircle cx='14' cy='14' r='6.5' fill='none' stroke='%23f4c95d' stroke-width='3'/%3E%3Cpath d='M19 19l6 6' stroke='%23f4c95d' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <nav class="nav" aria-label="Navegação principal">
+      <div class="nav-marca">
+        <span class="nav-logo" aria-hidden="true"></span>
+        <span>Prospecção</span>
+      </div>
+      <a href="#/busca" data-rota="busca"><span class="ico" data-ico="busca"></span><span>Buscar</span></a>
+      <a href="#/listas" data-rota="listas"><span class="ico" data-ico="listas"></span><span>Listas</span></a>
+      <a href="#/funil" data-rota="funil"><span class="ico" data-ico="funil"></span><span>Funil</span></a>
+      <a href="#/ajustes" data-rota="ajustes"><span class="ico" data-ico="ajustes"></span><span>Ajustes</span></a>
+    </nav>
+    <main id="conteudo" class="conteudo" tabindex="-1"></main>
+  </div>
+
+  <div id="selecao" class="selecao" hidden></div>
+
+  <div id="gaveta-fundo" class="gaveta-fundo" hidden></div>
+  <aside id="gaveta" class="gaveta" aria-hidden="true" aria-label="Ficha da empresa"></aside>
+
+  <div id="modal-fundo" class="modal-fundo" hidden>
+    <div id="modal" class="modal" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <div id="menu-flutuante" class="menu-flutuante" hidden></div>
+  <div id="avisos" class="avisos" aria-live="polite"></div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
