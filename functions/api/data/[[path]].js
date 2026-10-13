@@ -3,6 +3,7 @@ import { garantirSchema, melhorTelefone, PAPEIS } from "../../../lib/schema.js";
 import { lerConfig, marcarMudanca } from "../../../lib/config.js";
 import { efeitosDaEtapa } from "../../../lib/automacao.js";
 import { eventoMeta, eventoGA4, parse } from "../../../lib/rastreamento.js";
+import { lerRelatorio, estado as estadoRelatorio } from "../../../lib/relatorio.js";
 
 // API de dados próprios (listas, funil, atividades, modelos de mensagem) no D1.
 // Rotas:
@@ -28,7 +29,7 @@ import { eventoMeta, eventoGA4, parse } from "../../../lib/rastreamento.js";
 //   POST   /api/data/modelos                      { titulo, texto, passo? }
 //   PATCH  /api/data/modelos/:id                  { titulo?, texto?, passo? }
 //   DELETE /api/data/modelos/:id
-//   GET    /api/data/backup                       tudo em JSON
+//   GET    /api/data/backup                       tudo em JSON (inclui os pré-relatórios)
 //   GET    /api/data/export/gads?de=&ate=         vendas com gclid (Google Ads, conversão offline)
 
 const PASSOS_MODELO = ["primeiro_contato", "followup_1", "followup_2", "outro_momento"];
@@ -227,14 +228,22 @@ export async function onRequest({ request, env, params, waitUntil }) {
                     'municipio', json_extract(e.dados, '$.municipio'), 'uf', json_extract(e.dados, '$.uf'),
                     'cnae_fiscal_descricao', json_extract(e.dados, '$.cnae_fiscal_descricao'), 'email', json_extract(e.dados, '$.email')) END AS empresa_json,
                   (SELECT texto FROM atividades a WHERE a.negocio_id = n.id AND a.tipo <> 'sistema' ORDER BY a.id DESC LIMIT 1) AS ultima_atividade,
-                  (SELECT COUNT(*) FROM atividades a WHERE a.negocio_id = n.id AND a.tipo <> 'sistema') AS total_atividades
+                  (SELECT COUNT(*) FROM atividades a WHERE a.negocio_id = n.id AND a.tipo <> 'sistema') AS total_atividades,
+                  (SELECT json_object('status', r.status, 'vistas', r.visualizacoes, 'visto_em', r.ultima_visualizacao_em, 'enviado', r.enviado_em IS NOT NULL)
+                     FROM relatorios r WHERE r.negocio_id = n.id) AS relatorio_json
              FROM negocios n LEFT JOIN empresas e ON e.cnpj = n.cnpj
              ${filtro}
             ORDER BY n.atualizado_em DESC`
         )
         .bind(...(desde ? [desde] : []))
         .all();
-      return json(results.map(({ empresa_json, ...n }) => ({ ...n, empresa: empresa_json ? JSON.parse(empresa_json) : null })));
+      return json(
+        results.map(({ empresa_json, relatorio_json, ...n }) => ({
+          ...n,
+          empresa: empresa_json ? JSON.parse(empresa_json) : null,
+          relatorio: relatorio_json ? JSON.parse(relatorio_json) : null,
+        }))
+      );
     }
     if (!id && metodo === "POST") {
       const b = await corpo(request);
@@ -299,7 +308,8 @@ export async function onRequest({ request, env, params, waitUntil }) {
       const t = parse(tracking);
       delete t.ip;
       delete t.ua;
-      return json({ negocio: { ...resto, tracking: t }, empresa: dados ? JSON.parse(dados) : null });
+      const rel = estadoRelatorio(await lerRelatorio(db, negId), await lerConfig(db));
+      return json({ negocio: { ...resto, tracking: t, relatorio: rel }, empresa: dados ? JSON.parse(dados) : null });
     }
 
     if (!sub && metodo === "PATCH") {
@@ -379,6 +389,7 @@ export async function onRequest({ request, env, params, waitUntil }) {
       await db.batch([
         db.prepare("DELETE FROM atividades WHERE negocio_id = ?").bind(negId),
         db.prepare("DELETE FROM mensagens WHERE negocio_id = ?").bind(negId),
+        db.prepare("DELETE FROM relatorios WHERE negocio_id = ?").bind(negId),
         db.prepare("DELETE FROM negocios WHERE id = ?").bind(negId),
       ]);
       return json({ ok: true });
@@ -416,10 +427,12 @@ export async function onRequest({ request, env, params, waitUntil }) {
       db.prepare("SELECT lista_id FROM lista_itens WHERE cnpj = ?").bind(cnpj),
       db.prepare(`SELECT ${CAMPOS_NEGOCIO} FROM negocios n WHERE n.cnpj = ?`).bind(cnpj),
     ]);
+    const negocio = neg.results[0] || null;
+    if (negocio) negocio.relatorio = estadoRelatorio(await lerRelatorio(db, negocio.id), await lerConfig(db));
     return json({
       empresa: emp.results[0] ? JSON.parse(emp.results[0].dados) : null,
       listas: listas.results.map((r) => r.lista_id),
-      negocio: neg.results[0] || null,
+      negocio,
     });
   }
 
@@ -497,7 +510,7 @@ export async function onRequest({ request, env, params, waitUntil }) {
 
   // ---------- backup ----------
   if (rec === "backup" && metodo === "GET") {
-    const tabelas = ["empresas", "listas", "lista_itens", "etapas", "negocios", "atividades", "modelos", "mensagens"];
+    const tabelas = ["empresas", "listas", "lista_itens", "etapas", "negocios", "atividades", "modelos", "mensagens", "relatorios"];
     const res = await db.batch(tabelas.map((t) => db.prepare(`SELECT * FROM ${t}`)));
     const saida = { gerado_em: new Date().toISOString() };
     tabelas.forEach((t, i) => (saida[t] = res[i].results));

@@ -1,11 +1,13 @@
 import { garantirSchema } from "../../../lib/schema.js";
 import { lerConfig, marcarMudanca } from "../../../lib/config.js";
 import { classificarOrigem, eventoMeta } from "../../../lib/rastreamento.js";
+import { paginaPublica } from "../../../lib/relatorio.js";
 
 // Rotas públicas usadas pelo formulário do site (widget.js). Mesmo formato do CRM antigo,
 // então basta trocar o endereço do script no site.
 //   GET  /api/public/config   textos do botão e número do WhatsApp
 //   POST /api/public/lead     contato enviado pelo formulário
+//   GET  /api/public/relatorio/:slug   página do pré-relatório (o site tangit.com.br repassa o endereço para cá)
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -27,7 +29,11 @@ export async function onRequest(ctx) {
   if (!env.DB) return J({ error: "Banco D1 não vinculado." }, 500);
   const db = env.DB;
   await garantirSchema(db);
-  const [rota] = (params.path || []).map(String);
+  const [rota, extra] = (params.path || []).map(String);
+
+  if (rota === "relatorio" && (req.method === "GET" || req.method === "HEAD")) {
+    return paginaPublica(env, String(extra || "").toLowerCase(), req, ctx);
+  }
 
   if (rota === "config" && req.method === "GET") {
     const s = await lerConfig(db);

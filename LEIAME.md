@@ -8,10 +8,97 @@ Sistema próprio na Cloudflare (Pages + Functions + D1), com o WhatsApp do seu n
 - **Respostas**: quando alguém responde, a automação para, o card vai para Conversa e aparece como “nova”. Respostas automáticas da empresa (“Obrigado pelo contato…”) são reconhecidas e não param a sequência. Quem responde SAIR é descadastrado na hora.
 - **Ficha** com a conversa do WhatsApp: responda por ali ou pelo celular (as duas formas param a automação daquele contato).
 - **Formulário do site** (o mesmo do CRM antigo): os contatos do site entram direto no funil, com origem (Google Ads, Meta, Instagram…), Pixel/API de Conversões, GA4 e exportação para o Google Ads.
+- **Pré-relatório** (fase 2): uma leitura breve da marca de cada empresa, publicada em `tangit.com.br/<cliente>-relatorio-<6 dígitos>`. O sistema analisa o site sozinho, você confere o resto pelos links prontos, a IA escreve o rascunho, você revisa e aprova. O link entra nas mensagens pelo campo `{relatorio}` e o funil mostra quando o cliente abriu.
 
 ---
 
-## O que você vai fazer (uma vez)
+## Atualizar para a fase 2 (pré-relatório)
+
+| Parte | O quê | Tempo |
+| --- | --- | --- |
+| A | Publicar a atualização do sistema (GitHub + Cloudflare) | 5 min |
+| B | Instalar a rota dos links no site da Tangit | 5 min |
+| C | Testar o endereço e ajustar os textos fixos | 5 min |
+| D | (Opcional) Chave do Google PageSpeed | 5 min |
+
+Tudo no Safari, no Mac.
+
+### Pré-requisitos
+- Os dois arquivos baixados: `prospeccao-tangit-fase2.zip` (sistema) e `site-tangit-fase2.zip` (site). No Finder, dê dois cliques em cada um: aparecem as pastas `prospeccao-tangit` e `site-tangit`.
+- Acesso ao GitHub (repositórios `oavb23/prospeccao-tangit` e `oavb23/tangit`) e à Cloudflare.
+- Para a IA escrever o rascunho: a chave da Anthropic em **Ajustes → IA** (a mesma que classifica respostas). Sem ela, o botão **Rascunho sem IA** monta o texto pelas regras do sistema.
+
+### Parte A — Sistema
+1. Abra o sistema, clique em **Ajustes** (menu da esquerda) → **Cópia e acesso** → **Baixar cópia**. Guarde o `.json`.
+2. Abra **github.com/oavb23/prospeccao-tangit**. Acima da lista de arquivos, à direita, ao lado do botão verde **Code**, clique em **Add file** → **Upload files**.
+3. No Finder, abra a pasta `prospeccao-tangit`, selecione **o conteúdo** (pastas `functions`, `lib`, `public` e os arquivos `LEIAME.md` e `package.json`) e arraste para a área de upload. Espere carregar e clique no botão verde **Commit changes** (embaixo).
+4. Na Cloudflare (**dash.cloudflare.com** → menu da esquerda **Compute (Workers)** → **Workers & Pages** → projeto **prospeccao-tangit** → aba **Deployments**), espere a linha mais recente ficar com **Success**.
+
+O banco ganha a tabela de pré-relatórios sozinho, na primeira vez que o sistema abrir. Nada da fase 1 muda.
+
+### Parte B — Site da Tangit (rota dos links)
+O site passa a entregar os endereços `tangit.com.br/…-relatorio-…` buscando a página no sistema. O resto do site não muda.
+
+1. Abra **github.com/oavb23/tangit** → **Add file** → **Upload files** (mesmo lugar da Parte A).
+2. No Finder, abra a pasta `site-tangit`, selecione **o conteúdo** (pastas `functions` e `assets`, arquivos `_routes.json`, `_headers` e `README.md`) e arraste para a área de upload. Clique em **Commit changes**. Os arquivos que já existem no site (o `index.html`, as outras imagens) não são tocados.
+   - `functions/[slug].js`: a rota dos links.
+   - `_routes.json`: faz a rota rodar só nesses endereços (o resto do site continua sem custo de processamento).
+   - `_headers`: o mesmo de antes, mais a liberação das fontes da Tangit para a prévia do sistema.
+   - `assets/img/pre-relatorio-tangit.png`: a imagem do cartão de prévia no WhatsApp.
+3. Na Cloudflare, abra o projeto do site (**Workers & Pages** → projeto do `tangit.com.br`) → aba **Deployments**: espere o **Success**.
+
+O endereço do sistema que a rota usa é `https://prospeccao-tangit.pages.dev`. Se o seu for outro (aparece em **Ajustes → Pré-relatório**, no texto embaixo de **Testar endereço**): no projeto do site, aba **Settings** → **Variables and Secrets** → **Add** → Type **Text**, Variable name `SISTEMA_URL`, Value = o endereço do sistema → **Save**; depois **Deployments** → **⋯** no deploy mais recente → **Retry deployment**.
+
+### Parte C — Testar e ajustar
+1. No sistema: **Ajustes** → **Pré-relatório** (botões do topo da página) → **Testar endereço**. Deve aparecer **Funcionando**.
+2. Na mesma seção, confira o WhatsApp do botão do convite, a assinatura e os **textos fixos** (ponto de partida, fecho e destaque — vêm das suas frases da análise da GP). Clique em **Salvar**.
+3. Em **Ajustes → Mensagens**, decida onde o link entra. Escreva `{relatorio}` **sozinho na última linha** para a mensagem sair com o cartão de prévia (imagem + “Pré-relatório · Nome da empresa”). Ex.:
+
+   ```
+   …sua mensagem…
+
+   {relatorio}
+   ```
+
+   O aviso de descadastro (SAIR) entra antes do link. Se preferir perguntar antes de mandar, deixe o primeiro contato sem `{relatorio}` e mande o link pela ficha depois da resposta.
+
+### Parte D — (Opcional) Chave do Google PageSpeed
+Sem chave, o Google às vezes recusa a medição de velocidade (“limitou as medições sem chave”). A chave é gratuita.
+1. No Safari, abra **console.cloud.google.com** e entre com sua conta Google.
+2. Barra superior, à esquerda: clique no seletor de projeto → **Novo projeto** → nome `Tangit` → **Criar**. Confira se o projeto novo ficou selecionado no seletor.
+3. Menu **☰** (canto superior esquerdo) → **APIs e serviços** → **Biblioteca**. Busque `PageSpeed Insights API`, abra e clique em **Ativar**.
+4. Menu **☰** → **APIs e serviços** → **Credenciais** → botão **+ Criar credenciais** (barra superior) → **Chave de API**. Copie a chave.
+5. No sistema: **Ajustes → Pré-relatório** → **Chave do Google PageSpeed** → cole → **Salvar**.
+
+---
+
+## Pré-relatório no dia a dia
+
+1. **Aprovar**: cada empresa tem a linha **Pré-relatório** com o botão **Gerar** (ou **Continuar**/**Revisar**). Na ficha (Funil → card), o bloco **Pré-relatório** tem o mesmo botão.
+2. **1. Coleta**
+   - **Site**: confira o endereço (o sistema sugere pelo e-mail da empresa) e clique em **Analisar site**. Ele lê título, frase principal, plataforma, HTTPS, adaptação ao celular, WhatsApp, redes, Tag Manager, Analytics, Pixel da Meta e tag do Google Ads (inclusive dentro do Tag Manager) e mede a velocidade no celular. Sem site: marque **A empresa não tem site**.
+   - **Instagram, Google, anúncios e Reclame Aqui**: cada campo tem o botão **Abrir ↗**/**Conferir ↗**/**Maps ↗** com a busca pronta. Preencha só o que conferir; o que ficar em branco fica fora do relatório. Tudo é salvo sozinho.
+   - **O que mais você notou**: entra na redação.
+3. **2. O que a leitura encontrou**: a lista de fatos que a coleta mostra. Clique em **Escrever com IA** (ou **Rascunho sem IA**). A redação usa só esses fatos e as suas anotações.
+4. **3. Texto do relatório**: tudo editável — nome, cor de destaque (Tangit ou a cor do site), abertura, números, frases de cada canal, apontamentos (subir, descer, tirar, incluir), fecho, destaque e convite. A prévia ao lado (no iPhone, botão **Prévia** no topo) mostra a página como o cliente vê.
+5. **Aprovar e publicar** (topo, à direita): a página entra no ar e o link aparece no topo do editor (**Copiar**, **Abrir ↗**, **Tirar do ar**). Mudou algo depois? **Publicar mudanças** — o link continua o mesmo.
+6. Volte (**← Voltar**) para **Aprovar**: a mensagem já mostra o link no lugar de `{relatorio}`. Aprove como sempre.
+
+### Regras do pré-relatório
+
+| Situação | O que acontece |
+| --- | --- |
+| A mensagem usa `{relatorio}` e o relatório não foi aprovado | O botão **Aprovar** da mensagem fica travado (e **Aprovar todos** pula esse contato). |
+| Um follow-up usa `{relatorio}` e o relatório não está no ar | A automação pausa aquele contato e avisa na ficha. |
+| `{relatorio}` sozinho na última linha | Sai com o cartão de prévia. Em outro lugar do texto, sai como link comum. |
+| Você mandou o link (automação, sistema ou celular) | O relatório fica como **enviado**. |
+| O cliente abriu | Registro **Abriu o pré-relatório** na ficha e selo **Viu o relatório** no card do Funil. Aberturas antes do envio, suas (botão **Abrir ↗** do sistema), da prévia do WhatsApp e de robôs não contam. |
+| **Tirar do ar** | O link mostra “não está mais disponível”. Aprovando de novo, volta no mesmo endereço. |
+| Apagar o contato | Apaga também o pré-relatório e desativa o link. |
+
+---
+
+## Instalação da fase 1 (já feita — referência)
 
 | Parte | O quê | Tempo |
 | --- | --- | --- |
@@ -133,6 +220,7 @@ Em **Ajustes → Mensagens da automação** estão quatro rascunhos (primeiro co
 | `{nome}` | primeiro nome do sócio (ou do contato do site) |
 | `{empresa}` | nome fantasia, com acentos e sem “LTDA” |
 | `{razao_social}`, `{cidade}`, `{segmento}` | dados da Receita |
+| `{relatorio}` | link do pré-relatório aprovado (fase 2) |
 
 O exemplo embaixo de cada mensagem mostra como ela sai.
 
@@ -196,6 +284,10 @@ Para o Google Ads: **Ajustes → Formulário do site → Baixar CSV para o Googl
 
 | Sintoma | O que fazer |
 | --- | --- |
+| **Testar endereço** mostra **Não chegou** | Confira a Parte B (arquivos no repositório `oavb23/tangit` e deploy com **Success**) e o domínio em **Ajustes → Pré-relatório**. Se o endereço do sistema não for `https://prospeccao-tangit.pages.dev`, crie a variável `SISTEMA_URL` (Parte B). |
+| Velocidade: “O Google limitou as medições sem chave” | Parte D (chave do PageSpeed). |
+| **Escrever com IA** desativado | Falta a chave da Anthropic em **Ajustes → IA**. |
+| A mensagem com o link saiu sem o cartão de prévia | O link precisa estar sozinho na última linha. Se estiver e mesmo assim sair sem cartão, a Gowa não conseguiu abrir a página naquele momento: a mensagem sai normal, com o link. |
 | Faixa vermelha **“WhatsApp parado”** no topo | **Ajustes → WhatsApp → Testar conexão**. Se estiver **desconectado**, clique em **Conectar o WhatsApp** e leia o QR de novo. Se estiver **sem conexão**, a VPS pode estar desligada: no hPanel, na página da VPS, clique em **Reiniciar**. |
 | **Relógio parado** em Aprovar ou em Ajustes | A VPS está desligada ou travada: reinicie pelo hPanel. O relógio volta sozinho. |
 | Mensagens aprovadas não saem | Confira em **Aprovar**: automação ligada, WhatsApp conectado, horário de envio, limite do dia. |
@@ -216,6 +308,8 @@ Para o Google Ads: **Ajustes → Formulário do site → Baixar CSV para o Googl
 
 ```
 public/                 interface (index.html, app.js, styles.css, nomes.js)
+public/relatorio-pagina.js   página do pré-relatório (a mesma na prévia e no ar)
+public/coleta-site.js        leitura do código do site (roda no navegador)
 public/widget.js        formulário do site (mesmo contrato do CRM antigo) + teste.html
 functions/api/
   receita/, ibge/       busca de CNPJ e listas do IBGE
@@ -224,12 +318,18 @@ functions/api/
   gowa/webhook.js       mensagens e recibos que chegam do WhatsApp
   public/               formulário do site (público)
   instalar/             link temporário com o script de instalação da VPS
+  relatorio/            pré-relatório: coleta, redação, rascunho, aprovação
+  public/relatorio/     página publicada (o site tangit.com.br repassa os links para cá)
 lib/
   automacao.js          motor: aprovação, follow-ups, outro momento, respostas, verificação de números
   calendario.js         dias úteis, feriados (nacionais + locais) e horário de envio
   classificar.js        resposta de pessoa x resposta automática x SAIR (regras + IA opcional)
   gowa.js               cliente da Gowa (envio, verificação, QR code, assinatura do webhook)
   schema.js             tabelas e atualização automática do banco
+  relatorio.js          pré-relatório: rascunho, publicação, link, visitas
+  coleta.js             busca da página, Tag Manager, velocidade (PageSpeed) e links da conferência
+  achados.js            fatos encontrados, números, frases de cada canal e rascunho sem IA
+  redacao.js            rascunho com IA (só com os fatos coletados)
 ```
 
 As tabelas são criadas e atualizadas sozinhas. Não é preciso rodar SQL.

@@ -3,6 +3,8 @@
    listas e funil no D1 da Cloudflare (via /api/data), automação de WhatsApp (via /api/automacao). */
 
 import { titulo, semSufixo, comparavel } from "./nomes.js";
+import { paginaRelatorio } from "./relatorio-pagina.js";
+import { analisarHtml, montarResultadoSite, precisaGtag } from "./coleta-site.js";
 
 // ============================================================ ícones
 const SVG = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -196,6 +198,7 @@ const E = {
   funil: { negocios: [], carregando: false, filtro: "" },
   aprovar: { fila: null, painel: null },
   gaveta: null,
+  rel: null,
 };
 
 const UFS = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"];
@@ -529,7 +532,11 @@ function rota() {
 
 async function renderizar() {
   const { pag, id } = rota();
-  $$(".nav a").forEach((a) => a.classList.toggle("ativo", a.dataset.rota === pag));
+  if (E.ctx === "relatorio" && E.rel) {
+    salvarRelPendente();
+    salvarManualAgora();
+  }
+  $$(".nav a").forEach((a) => a.classList.toggle("ativo", a.dataset.rota === (pag === "relatorio" ? "aprovar" : pag)));
   limparSelecao(false);
   const main = $("#conteudo");
   if (pag === "listas") {
@@ -541,6 +548,9 @@ async function renderizar() {
   } else if (pag === "aprovar") {
     E.ctx = "aprovar";
     await telaAprovar(main);
+  } else if (pag === "relatorio") {
+    E.ctx = "relatorio";
+    await telaRelatorio(main, id);
   } else if (pag === "ajustes") {
     E.ctx = "ajustes";
     await telaAjustes(main, id);
@@ -1362,6 +1372,9 @@ function selosAuto(n, et) {
     else s.push(`<span class="selo acento" title="Próxima mensagem automática">${ico("robo")}${ROTULO_PASSO[p] || "Automação"} ${fmtCurto(n.proxima_acao_em)}</span>`);
   } else if (n.automacao === "pausada") s.push(`<span class="selo aviso">${ico("pausa")}Pausada</span>`);
   else if (n.automacao === "respondeu" && !n.nao_lidas) s.push(`<span class="selo ok">Respondeu</span>`);
+  const rel = n.relatorio;
+  if (rel?.vistas > 0) s.push(`<span class="selo ok" title="Abriu o pré-relatório${rel.visto_em ? ` (última vez ${esc(quando(rel.visto_em))})` : ""}">${ico("nota")}Viu o relatório${rel.vistas > 1 ? ` ${rel.vistas}×` : ""}</span>`);
+  else if (rel && rel.status !== "rascunho" && !rel.enviado && aberta) s.push(`<span class="selo" title="Pré-relatório publicado, ainda não enviado">${ico("nota")}Relatório pronto</span>`);
   if (aberta && !n.optout && (n.wa_status === "nao_tem" || n.wa_status === "sem_numero")) s.push(`<span class="selo perigo">Sem WhatsApp</span>`);
   else if (aberta && et?.papel === "entrada" && n.automacao === "inativa")
     s.push(n.wa_status === "tem" ? `<span class="selo">${ico("whats")}Pronto p/ aprovar</span>` : `<span class="selo">Conferindo WhatsApp…</span>`);
@@ -1797,7 +1810,49 @@ function desenharGaveta() {
   if (neg) {
     ligarNegocio(neg);
     ligarWhatsApp(neg, G);
+    ligarRelatorioFicha(neg);
   }
+}
+
+// ---------- bloco "Pré-relatório" na ficha
+function htmlRelatorioFicha(neg) {
+  const r = neg.relatorio || { status: "nenhum" };
+  const st = r.status || "nenhum";
+  const vistas = r.visualizacoes || 0;
+  return `<section class="secao" id="sec-rel"><h3>Pré-relatório ${seloRelatorio(st)}</h3><div class="conteudo-s">
+    ${
+      r.link
+        ? `<div class="linha rl-link"><code>${esc(r.link)}</code><button class="btn peq" data-rel="copiar">${ico("copiar")} Copiar</button><a class="btn peq" href="${esc(linkInterno(r.link))}" target="_blank" rel="noopener">Abrir ↗</a></div>
+           <p class="dica">${r.enviado_em ? `Enviado ${esc(quando(r.enviado_em))}` : "Ainda não enviado"} · ${
+             vistas ? `aberto ${plural(vistas, "vez", "vezes")}${r.ultima_visualizacao_em ? `, a última ${esc(quando(r.ultima_visualizacao_em))}` : ""}` : "ainda não aberto pelo cliente"
+           }</p>`
+        : `<p class="auto-status">${st === "nenhum" ? "Leitura breve da marca a partir do que está público, para mandar antes ou durante a conversa." : "Em rascunho: o cliente ainda não vê."}</p>`
+    }
+    <div class="acoes-auto">
+      <button class="btn peq ${r.link ? "" : "prim"}" data-rel="editor">${st === "nenhum" ? "Gerar pré-relatório" : r.link ? "Revisar" : "Continuar"}</button>
+      ${r.link ? `<button class="btn peq" data-rel="mensagem">${ico("whats")} Pôr o link na mensagem</button>` : ""}
+    </div>
+  </div></section>`;
+}
+
+function ligarRelatorioFicha(neg) {
+  const sec = $("#sec-rel");
+  if (!sec) return;
+  sec.onclick = (ev) => {
+    const b = ev.target.closest("[data-rel]");
+    if (!b) return;
+    const link = neg.relatorio?.link;
+    if (b.dataset.rel === "editor") return abrirEditorRelatorio(neg.id, location.hash || "#/funil");
+    if (b.dataset.rel === "copiar") return copiar(link, "Link copiado");
+    if (b.dataset.rel === "mensagem") {
+      const ta = $("#w-texto");
+      if (!ta || !link) return;
+      if (!ta.value.includes(link)) ta.value = `${ta.value.trim() ? `${ta.value.trim()}\n\n` : ""}${link}`;
+      ta.dataset.mexeu = "1";
+      ta.scrollIntoView({ behavior: "smooth", block: "center" });
+      ta.focus();
+    }
+  };
 }
 
 // ---------- ficha da empresa (Receita)
@@ -1843,7 +1898,7 @@ function htmlGavetaEmpresa(G) {
         <button class="btn peq ico-btn" id="g-mais" title="Mais" aria-label="Mais opções">⋯</button>
       </div>
 
-      ${neg ? htmlWhatsApp(neg, G) + htmlNegocio(neg, etapa, G.atividades) : ""}
+      ${neg ? htmlWhatsApp(neg, G) + htmlRelatorioFicha(neg) + htmlNegocio(neg, etapa, G.atividades) : ""}
 
       <section class="secao"><h3>Dados gerais</h3><div class="conteudo-s"><dl class="dl">
         <dt>CNPJ</dt><dd class="num">${fmtCNPJ(r.cnpj)}</dd>
@@ -1991,6 +2046,7 @@ function htmlGavetaContato(G) {
         <button class="btn peq ico-btn" id="g-mais" title="Mais" aria-label="Mais opções">⋯</button>
       </div>
       ${htmlWhatsApp(neg, G)}
+      ${htmlRelatorioFicha(neg)}
       ${htmlNegocio(neg, etapa, G.atividades)}
       <section class="secao"><h3>Contato</h3><div class="conteudo-s">
         <div class="grade-2">
@@ -2606,9 +2662,10 @@ function desenharFila() {
   const conferindo = F.itens.filter((i) => !i.wa_status);
   const semWhats = F.itens.filter((i) => i.wa_status === "nao_tem" || i.wa_status === "sem_numero");
   const todos = $("#ap-todos");
+  const aprovaveis = prontos.filter((i) => !i.falta_relatorio).length;
   if (todos) {
-    todos.disabled = !prontos.length;
-    todos.innerHTML = `${ico("aprovar")} Aprovar todos${prontos.length > 1 ? ` (${prontos.length})` : ""}`;
+    todos.disabled = !aprovaveis;
+    todos.innerHTML = `${ico("aprovar")} Aprovar todos${aprovaveis > 1 ? ` (${aprovaveis})` : ""}`;
   }
   const verif = $("#ap-verificar");
   if (verif) verif.hidden = !conferindo.length;
@@ -2647,14 +2704,30 @@ function htmlItemFila(i) {
       <span class="selo ok" title="Número que vai receber">${ico("whats")}<span class="num">${esc(fmtTel(i.wa_numero))}</span></span>
     </div>
     ${i.wa_nome && (alerta || comparavel(i.wa_nome) !== comparavel(nome)) ? `<div class="wa-nome ${alerta ? "alerta" : ""}">${alerta ? ico("alerta") : ""}<span>No WhatsApp: <strong>${esc(i.wa_nome)}</strong>${alerta ? ` — ${esc(alerta)}` : ""}</span></div>` : ""}
+    ${htmlRelFila(i)}
     <textarea class="entrada texto-fila" rows="5" aria-label="Mensagem para ${esc(nome)}">${esc(i.texto)}</textarea>
     <div class="rod">
       <span class="dica estado-texto"></span>
       <button class="btn peq fant" data-a="ficha">Ficha</button>
       <button class="btn peq fant ico-btn" data-a="mais" aria-label="Mais opções" title="Mais opções">⋯</button>
-      <button class="btn peq prim" data-a="aprovar">${ico("aprovar")} Aprovar</button>
+      <button class="btn peq prim" data-a="aprovar" ${i.falta_relatorio ? 'disabled title="Aprove o pré-relatório antes"' : ""}>${ico("aprovar")} Aprovar</button>
     </div>
   </article>`;
+}
+
+// linha do pré-relatório no card da fila: situação + botão para gerar ou revisar
+function htmlRelFila(i) {
+  const r = i.relatorio || { status: "nenhum" };
+  const st = r.status || "nenhum";
+  const texto = {
+    nenhum: "Pré-relatório ainda não gerado",
+    rascunho: "Pré-relatório em rascunho",
+    aprovado: "Pré-relatório publicado",
+    alterado: "Pré-relatório publicado, com mudanças não publicadas",
+  }[st];
+  return `<div class="rel-fila ${st}">${ico("nota")}<span>${texto}${
+    i.falta_relatorio ? `<span class="falta"> · a mensagem usa o link: aprove o relatório para liberar o envio</span>` : ""
+  }</span><button class="btn peq ${st === "aprovado" ? "fant" : ""}" data-a="relatorio">${st === "nenhum" ? "Gerar" : st === "rascunho" ? "Continuar" : "Revisar"}</button></div>`;
 }
 
 function htmlItemCompacto(i) {
@@ -2690,7 +2763,18 @@ function autoAltura(ta) {
 
 function ligarFila(el) {
   $$(".texto-fila", el).forEach(autoAltura);
-  el.oninput = (ev) => ev.target.classList.contains("texto-fila") && autoAltura(ev.target);
+  el.oninput = (ev) => {
+    if (!ev.target.classList.contains("texto-fila")) return;
+    autoAltura(ev.target);
+    // tirou ou pôs {relatorio} no texto: libera ou trava o Aprovar
+    const card = ev.target.closest("[data-id]");
+    const item = E.aprovar.fila.itens.find((x) => x.id === Number(card.dataset.id));
+    const falta = /\{relatorio\}/.test(ev.target.value) && !item?.relatorio?.link;
+    const b = $('[data-a="aprovar"]', card);
+    if (b) b.disabled = falta;
+    const linha = $(".rel-fila .falta", card);
+    if (linha) linha.hidden = !falta;
+  };
   el.onclick = async (ev) => {
     const b = ev.target.closest("[data-a]");
     if (!b) return;
@@ -2699,6 +2783,7 @@ function ligarFila(el) {
     const item = E.aprovar.fila.itens.find((x) => x.id === id);
     const a = b.dataset.a;
     if (a === "ficha") return abrirNegocioPorId(id);
+    if (a === "relatorio") return abrirEditorRelatorio(id, "#/aprovar");
     if (a === "aprovar") return aprovarItens([{ negocio_id: id, texto: $(".texto-fila", card).value }], [card]);
     if (a === "cancelar") return acaoFila(id, "reabrir");
     if (a === "numero") return pedirOutroNumero(id);
@@ -2783,7 +2868,14 @@ async function aprovarItens(itens, cards = []) {
     const r = await api("automacao/aprovar", { method: "POST", body: { itens } });
     const p = E.aprovar.painel;
     if (r.aprovados) aviso(`${plural(r.aprovados, "contato aprovado", "contatos aprovados")}${p && !p.ligada ? " — a automação está desligada" : ""}`);
-    else aviso("Nada foi aprovado (a fila mudou). Atualizando…", true);
+    if (r.sem_relatorio)
+      aviso(
+        r.sem_relatorio === 1
+          ? "1 mensagem ficou na fila: ela usa o link do pré-relatório, que ainda não foi aprovado"
+          : `${r.sem_relatorio} mensagens ficaram na fila: usam o link do pré-relatório, que ainda não foi aprovado`,
+        true
+      );
+    else if (!r.aprovados) aviso("Nada foi aprovado (a fila mudou). Atualizando…", true);
     checarNovidades(true);
     await Promise.all([recarregarAprovar(), atualizarPainelAprovar()]);
   } catch (e) {
@@ -2793,7 +2885,7 @@ async function aprovarItens(itens, cards = []) {
 }
 
 async function aprovarTodos() {
-  const cards = $$("#ap-lista .item-fila:not(.compacto)");
+  const cards = $$("#ap-lista .item-fila:not(.compacto)").filter((c) => !$('[data-a="aprovar"]', c)?.disabled);
   if (!cards.length) return;
   const p = E.aprovar.painel || {};
   const cfg = p.config || {};
@@ -2832,6 +2924,7 @@ const SECOES_AJ = [
   ["aj-whatsapp", "WhatsApp"],
   ["aj-automacao", "Automação"],
   ["aj-mensagens", "Mensagens"],
+  ["aj-relatorio", "Pré-relatório"],
   ["aj-relogio", "Relógio"],
   ["aj-site", "Site"],
   ["aj-ia", "IA"],
@@ -2862,6 +2955,7 @@ async function telaAjustes(main, secao) {
       ${blocoWhatsApp(cfg)}
       ${blocoAutomacao(cfg)}
       ${blocoMensagens(cfg)}
+      ${blocoRelatorio(cfg)}
       ${blocoRelogio(cfg)}
       ${blocoSite(cfg)}
       ${blocoIA(cfg)}
@@ -2881,6 +2975,7 @@ async function telaAjustes(main, secao) {
   ligarWhatsAppAjustes(cfg);
   ligarAutomacaoAjustes();
   ligarMensagens(cfg);
+  ligarRelatorioAjustes(cfg);
   ligarRelogio(cfg);
   ligarSite();
   ligarIA();
@@ -3215,8 +3310,27 @@ const VARIAVEIS = [
   ["{razao_social}", "razão social"],
   ["{cidade}", "cidade"],
   ["{segmento}", "atividade (CNAE)"],
+  ["{relatorio}", "link do pré-relatório aprovado (sozinho na última linha, sai com o cartão de prévia)"],
 ];
-const EXEMPLO_VARS = { saudacao: "Olá, João", nome: "João", empresa: "Padaria Pão Bom", razao_social: "Pão Bom Padaria LTDA", cidade: "Sorocaba", segmento: "Padaria e confeitaria", socio: "João" };
+const EXEMPLO_VARS = {
+  saudacao: "Olá, João",
+  nome: "João",
+  empresa: "Padaria Pão Bom",
+  razao_social: "Pão Bom Padaria LTDA",
+  cidade: "Sorocaba",
+  segmento: "Padaria e confeitaria",
+  socio: "João",
+  relatorio: "https://tangit.com.br/padaria-pao-bom-relatorio-482913",
+};
+// mesmo critério do servidor: com o link sozinho na última linha, o aviso de descadastro entra antes dele
+function comRodapeTela(texto, rodape) {
+  const r = String(rodape || "").trim();
+  const t = String(texto || "");
+  if (!r || t.includes(r)) return t;
+  const m = t.match(/^([\s\S]*?)\n[ \t]*(https?:\/\/\S+)\s*$/);
+  if (m && m[1].trim()) return `${m[1].trim()}\n\n${r}\n\n${m[2]}`;
+  return `${t}\n\n${r}`;
+}
 const exemplo = (texto) =>
   String(texto || "")
     .replace(/\{(\w+)\}/g, (t, k) => (k in EXEMPLO_VARS ? EXEMPLO_VARS[k] : t))
@@ -3245,8 +3359,8 @@ function ligarMensagens(cfg) {
   let ultimo = null;
   const previa = (passo) => {
     const t = valor(`mm-${passo}`);
-    const rod = passo === "primeiro_contato" && cfg.rodape_descadastro ? `\n\n${cfg.rodape_descadastro}` : "";
-    $(`#mp-${passo}`).textContent = t.trim() ? exemplo(t) + rod : "(vazio — este passo fica parado)";
+    const ex = passo === "primeiro_contato" ? comRodapeTela(exemplo(t), cfg.rodape_descadastro) : exemplo(t);
+    $(`#mp-${passo}`).textContent = t.trim() ? ex : "(vazio — este passo fica parado)";
   };
   PASSOS_MSG.forEach(([passo]) => {
     const ta = $(`#mm-${passo}`);
@@ -3285,6 +3399,88 @@ function ligarMensagens(cfg) {
       aviso(e.message, true);
     }
   });
+}
+
+// ---------- Pré-relatório
+function blocoRelatorio(cfg) {
+  const area = (id, rotulo, v, linhas = 3, dica = "") =>
+    `<div class="campo"><label for="${id}">${rotulo}</label><textarea id="${id}" class="entrada" rows="${linhas}">${esc(v || "")}</textarea>${dica ? `<p class="dica">${dica}</p>` : ""}</div>`;
+  return `<section class="bloco" id="aj-relatorio">
+    <h2>Pré-relatório</h2>
+    <p>Textos e dados que entram em todo pré-relatório novo (cada um pode ser mudado no próprio relatório) e o endereço dos links.</p>
+    <h3 class="sub">Endereço dos links</h3>
+    <div class="status-linha" id="pr-status">Os links ficam em <strong>https://${esc(cfg.relatorio_dominio || "tangit.com.br")}/&lt;cliente&gt;-relatorio-&lt;6 dígitos&gt;</strong>.</div>
+    <div class="grade-2">
+      ${campo("pr-dominio", "Domínio", cfg.relatorio_dominio, 'autocapitalize="off" inputmode="url"')}
+      <div class="campo"><label>&nbsp;</label><button class="btn" id="pr-testar">Testar endereço</button></div>
+    </div>
+    <p class="dica">O site da Tangit repassa esses endereços para este sistema (instalação no LEIAME, parte Pré-relatório). Endereço deste sistema: <code>${esc(ORIGEM)}</code>${
+      /^https:\/\/prospeccao-tangit\.pages\.dev$/.test(ORIGEM) ? "" : " — como é diferente de https://prospeccao-tangit.pages.dev, crie no projeto do site a variável <code>SISTEMA_URL</code> com este endereço"
+    }.</p>
+    <h3 class="sub">Convite (fim da página)</h3>
+    <div class="grade-2">
+      ${campo("pr-whats", "WhatsApp do botão", cfg.relatorio_whatsapp ? fmtTel(cfg.relatorio_whatsapp) : "", 'inputmode="tel"')}
+      ${campo("pr-botao", "Texto do botão", cfg.relatorio_cta_botao)}
+    </div>
+    ${campo("pr-cta-titulo", "Título", cfg.relatorio_cta_titulo)}
+    ${campo("pr-cta-texto", "Texto", cfg.relatorio_cta_texto)}
+    ${campo("pr-cta-msg", "Mensagem que abre no WhatsApp", cfg.relatorio_cta_mensagem, "", "{empresa} vira o nome da empresa.")}
+    <h3 class="sub">Assinatura e cor</h3>
+    <div class="grade-2">
+      ${campo("pr-nome", "Nome", cfg.relatorio_assinatura_nome)}
+      ${campo("pr-cargo", "Cargo", cfg.relatorio_assinatura_cargo)}
+    </div>
+    <div class="campo" style="margin-top:12px"><label for="pr-cor">Cor de destaque padrão</label><input id="pr-cor" type="color" class="cor" value="${esc(cfg.relatorio_cor || "#e23917")}"></div>
+    <h3 class="sub">Textos fixos</h3>
+    ${area("pr-tese", "O ponto de partida (frase)", cfg.relatorio_tese, 2)}
+    ${area("pr-tese-nota", "O ponto de partida (complemento)", cfg.relatorio_tese_nota, 3)}
+    ${area("pr-fecho", "Fecho (referência para a IA e texto do rascunho sem IA)", cfg.relatorio_fecho, 4, "Use **assim** para negrito.")}
+    ${area("pr-destaque", "Destaque (caixa colorida)", cfg.relatorio_destaque, 3)}
+    <h3 class="sub">Coleta e redação</h3>
+    <div class="grade-2">
+      ${campo("pr-psi", "Chave do Google PageSpeed (opcional)", cfg.psi_chave, 'type="password" autocomplete="off"', "Sem chave, o Google às vezes recusa a medição de velocidade.")}
+      ${campo("pr-modelo", "Modelo da IA para a redação", cfg.ia_modelo_relatorio, 'autocapitalize="off"', "Usa a mesma chave de Ajustes → IA.")}
+    </div>
+    <div class="acoes-bloco"><button class="btn prim" id="pr-salvar">Salvar</button></div>
+  </section>`;
+}
+
+function ligarRelatorioAjustes() {
+  $("#pr-salvar").onclick = () =>
+    salvarConfig(
+      {
+        relatorio_dominio: valor("pr-dominio"),
+        relatorio_whatsapp: valor("pr-whats"),
+        relatorio_cta_botao: valor("pr-botao"),
+        relatorio_cta_titulo: valor("pr-cta-titulo"),
+        relatorio_cta_texto: valor("pr-cta-texto"),
+        relatorio_cta_mensagem: valor("pr-cta-msg"),
+        relatorio_assinatura_nome: valor("pr-nome"),
+        relatorio_assinatura_cargo: valor("pr-cargo"),
+        relatorio_cor: valor("pr-cor"),
+        relatorio_tese: valor("pr-tese"),
+        relatorio_tese_nota: valor("pr-tese-nota"),
+        relatorio_fecho: valor("pr-fecho"),
+        relatorio_destaque: valor("pr-destaque"),
+        psi_chave: valor("pr-psi"),
+        ia_modelo_relatorio: valor("pr-modelo") || "claude-sonnet-5-5",
+      },
+      "Pré-relatório salvo"
+    );
+  $("#pr-testar").onclick = async (ev) => {
+    const b = ev.currentTarget;
+    b.disabled = true;
+    const st = $("#pr-status");
+    st.innerHTML = `<span class="giro mini"></span> Testando…`;
+    try {
+      if (valor("pr-dominio")) await api("automacao/config", { method: "PUT", body: { relatorio_dominio: valor("pr-dominio") } });
+      const r = await api("relatorio/teste-endereco", { method: "POST" });
+      st.innerHTML = `<span class="selo ${r.ok ? "ok" : "perigo"}">${r.ok ? `${ico("check")}Funcionando` : "Não chegou"}</span> ${esc(r.detalhe || "")} <code>${esc(r.endereco || "")}</code>`;
+    } catch (e) {
+      st.innerHTML = `<span class="selo perigo">Erro</span> ${esc(e.message)}`;
+    }
+    b.disabled = false;
+  };
 }
 
 // ---------- Relógio
@@ -3415,8 +3611,8 @@ async function baixarArquivo(caminho, nome) {
 // ---------- IA
 function blocoIA(cfg) {
   return `<section class="bloco" id="aj-ia">
-    <h2>IA para classificar respostas (opcional)</h2>
-    <p>Separa resposta automática (“Obrigado pelo contato, em breve retornaremos”) de resposta de pessoa. As regras do sistema resolvem a maioria; a IA só entra nos casos duvidosos. Sem chave, vale só a regra.</p>
+    <h2>IA (opcional)</h2>
+    <p>Separa resposta automática (“Obrigado pelo contato, em breve retornaremos”) de resposta de pessoa — as regras resolvem a maioria; a IA só entra nos casos duvidosos. Também escreve o rascunho do pré-relatório (modelo em Ajustes → Pré-relatório). Sem chave, valem só as regras.</p>
     <div class="grade-2">
       ${campo("ia-chave", "Chave da API da Anthropic", cfg.ia_chave, 'type="password" autocomplete="off" placeholder="sk-ant-…"')}
       ${campo("ia-modelo", "Modelo", cfg.ia_modelo, 'autocapitalize="off"')}
@@ -3601,6 +3797,712 @@ function ligarBackup() {
     } catch {}
     aviso("Chave removida deste aparelho");
   };
+}
+
+// ============================================================ tela: PRÉ-RELATÓRIO (coleta, texto, prévia e aprovação)
+const AREAS_REL = ["Marca", "Site", "Instagram", "Google", "Reputação", "Mídia", "Medição", "Negócio"];
+const CONTEUDO_IG = [
+  ["oferta", "Oferta e preço"],
+  ["produto", "Produto"],
+  ["bastidores", "Bastidores"],
+  ["educativo", "Educativo"],
+  ["depoimentos", "Depoimentos"],
+  ["institucional", "Institucional"],
+];
+const REPUTACOES = ["RA1000", "Ótimo", "Bom", "Regular", "Ruim", "Não recomendada", "Sem índice", "Não encontrada"];
+const STATUS_REL = {
+  nenhum: ["Não gerado", ""],
+  rascunho: ["Rascunho", "aviso"],
+  aprovado: ["Publicado", "ok"],
+  alterado: ["Publicado · com mudanças não publicadas", "aviso"],
+};
+const seloRelatorio = (st) => {
+  const [t, c] = STATUS_REL[st || "nenhum"] || STATUS_REL.nenhum;
+  return `<span class="selo ${c}">${esc(t)}</span>`;
+};
+const linkInterno = (link) => (link ? `${link}?interno=1` : "#");
+const fmtMs = (ms) => (ms ? `${(ms / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} s` : "—");
+
+// caminho "cta.titulo" → valor dentro do conteúdo
+const lerCaminho = (o, c) => c.split(".").reduce((x, k) => (x == null ? x : x[k]), o);
+function gravarCaminho(o, c, v) {
+  const ks = c.split(".");
+  let x = o;
+  for (const k of ks.slice(0, -1)) x = x[k] ??= {};
+  x[ks[ks.length - 1]] = v;
+}
+
+async function telaRelatorio(main, id) {
+  const negId = Number(id);
+  if (E.rel?.negId !== negId) E.rel = { negId, d: null, c: null, timers: {}, pendente: false, salvando: null };
+  main.innerHTML = `<div class="topo"><button class="btn fant" id="rl-voltar">← Voltar</button><h1>Pré-relatório</h1></div>
+    <div class="pagina"><div class="carregando"><span class="giro"></span> Carregando…</div></div>`;
+  $("#rl-voltar").onclick = voltarDoRelatorio;
+  if (!negId) return ($(".pagina", main).innerHTML = `<div class="alerta">Contato inválido.</div>`);
+  if (!E.resumo.etapas.length) await carregarResumo();
+  try {
+    E.rel.d = await api(`relatorio/${negId}`);
+  } catch (e) {
+    $(".pagina", main).innerHTML = `<div class="alerta">${esc(e.message)}</div>`;
+    return;
+  }
+  E.rel.c = JSON.parse(JSON.stringify(E.rel.d.relatorio.conteudo));
+  desenharRelatorio(main);
+}
+
+function voltarDoRelatorio() {
+  salvarRelPendente();
+  location.hash = E.rel?.voltarPara || "#/aprovar";
+}
+
+function desenharRelatorio(main) {
+  const d = E.rel.d;
+  const ctx = d.contexto;
+  main.innerHTML = `
+    <div class="topo rl-topo">
+      <button class="btn fant" id="rl-voltar">← Voltar</button>
+      <h1>${esc(ctx.nome)}<span class="rl-sub">Pré-relatório</span></h1>
+      <span id="rl-status">${seloRelatorio(d.relatorio.status)}</span>
+      <span class="dica" id="rl-salvo"></span>
+      <button class="btn rl-so-movel" id="rl-ver-previa">Prévia</button>
+      <button class="btn prim" id="rl-aprovar">${ico("aprovar")} ${d.relatorio.publicado ? "Aprovar mudanças" : "Aprovar e publicar"}</button>
+    </div>
+    <div class="pagina rl-pagina">
+      <div class="rl-editor">
+        <div id="rl-publicacao"></div>
+        <section class="bloco" id="rl-coleta">
+          <h2><span class="rl-n">1</span> Coleta</h2>
+          <p>O site é analisado sozinho. O resto você confere em poucos minutos pelos links prontos; o que ficar em branco fica fora do relatório.</p>
+          ${htmlColetaSite()}
+          ${htmlColetaManual()}
+        </section>
+        <section class="bloco" id="rl-pontos"></section>
+        <section class="bloco" id="rl-texto"></section>
+      </div>
+      <aside class="rl-previa" aria-label="Prévia">
+        <div class="rl-previa-cab"><span class="rotulo">Prévia no celular</span><a class="btn peq fant" id="rl-abrir-link" target="_blank" rel="noopener" hidden>Abrir publicado ↗</a></div>
+        <div class="rl-moldura"><iframe id="rl-iframe" title="Prévia do pré-relatório"></iframe></div>
+      </aside>
+    </div>
+    <div class="rl-previa-movel" id="rl-previa-movel" hidden>
+      <div class="rl-previa-movel-cab"><strong>Prévia</strong><button class="btn" id="rl-fechar-previa">Fechar</button></div>
+      <iframe id="rl-iframe-movel" title="Prévia do pré-relatório"></iframe>
+    </div>`;
+  $("#rl-voltar").onclick = voltarDoRelatorio;
+  $("#rl-aprovar").onclick = aprovarRelatorio;
+  $("#rl-ver-previa").onclick = () => {
+    $("#rl-previa-movel").hidden = false;
+    $("#rl-iframe-movel").srcdoc = htmlPrevia();
+  };
+  $("#rl-fechar-previa").onclick = () => ($("#rl-previa-movel").hidden = true);
+  E.rel.ultimoStatus = d.relatorio.status;
+  ligarColeta();
+  desenharResultadoSite();
+  desenharPontos();
+  desenharTextoRel();
+  desenharPublicacao();
+  atualizarPrevia(true);
+}
+
+// ---------- coleta: site
+function htmlColetaSite() {
+  const d = E.rel.d;
+  const site = d.relatorio.coleta.site;
+  const sem = !!d.relatorio.coleta.manual?.sem_site;
+  return `<h3 class="sub">Site</h3>
+    <div class="linha rl-site-linha">
+      <input id="rl-url" class="entrada" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="www.empresa.com.br" value="${esc(site?.url_informada || d.site_sugerido || "")}">
+      <button class="btn prim" id="rl-analisar">${site ? "Analisar de novo" : "Analisar site"}</button>
+    </div>
+    ${!site && d.site_sugerido ? `<p class="dica">Sugestão a partir do e-mail da empresa. Confira antes de analisar.</p>` : ""}
+    <label class="rl-check"><input type="checkbox" id="rl-sem-site" ${sem ? "checked" : ""}> A empresa não tem site</label>
+    <div id="rl-site-res"></div>`;
+}
+
+function desenharResultadoSite(carregandoVel = false) {
+  const el = $("#rl-site-res");
+  if (!el) return;
+  const d = E.rel.d;
+  const s = d.relatorio.coleta.site;
+  const v = d.relatorio.coleta.velocidade;
+  const m = d.medicao;
+  if (!s) return (el.innerHTML = "");
+  if (!s.ok) return (el.innerHTML = `<div class="alerta" style="margin-top:10px">${esc(s.erro || "Não foi possível abrir o site.")}</div>`);
+  const sim = (b, t = "") => `<span class="rl-ok ${b ? "sim" : "nao"}">${b ? "✓" : "✕"}</span>${t}`;
+  const via = (direto, gtm) => (direto ? " no código" : gtm ? " via GTM" : "");
+  const t = s.tags || {};
+  const g = s.via_gtm || {};
+  const redes = Object.entries(s.redes || {}).filter(([, x]) => x);
+  const linkRede = (k, x) =>
+    k === "instagram" ? `https://www.instagram.com/${x}/` : k === "tiktok" ? `https://www.tiktok.com/@${x}` : x;
+  const medicaoHtml = m
+    ? `<div class="rl-chips">
+        <span class="rl-chip ${m.gtm ? "sim" : ""}">${sim(m.gtm, ` Tag Manager${t.gtm?.length ? ` <small>${esc(t.gtm.join(", "))}</small>` : ""}`)}</span>
+        <span class="rl-chip ${m.ga4 ? "sim" : ""}">${sim(m.ga4, ` Analytics 4${via(t.ga4?.length, g.ga4?.length)}`)}</span>
+        <span class="rl-chip ${m.gads ? "sim" : ""}">${sim(m.gads, ` Google Ads (conversão)${via(t.gads?.length, g.gads?.length || s.gads_via_tag_google?.length)}`)}</span>
+        <span class="rl-chip ${m.pixel_meta ? "sim" : ""}">${sim(m.pixel_meta, ` Pixel da Meta${via(t.pixel_meta?.length, g.pixel_meta?.length)}`)}</span>
+        ${m.tiktok ? `<span class="rl-chip sim">${sim(true, " TikTok")}</span>` : ""}
+        ${m.linkedin ? `<span class="rl-chip sim">${sim(true, " LinkedIn")}</span>` : ""}
+        ${m.mapa_calor ? `<span class="rl-chip sim">${sim(true, " Mapa de calor")}</span>` : ""}
+        ${m.rdstation ? `<span class="rl-chip sim">${sim(true, " RD Station")}</span>` : ""}
+        ${m.ua_antigo ? `<span class="rl-chip">${sim(false, " Analytics antigo (UA)")}</span>` : ""}
+      </div>
+      ${m.gtm && !m.gtm_lido ? `<p class="dica">O site usa o Tag Manager, mas não deu para ler o que tem dentro: o que aparece como ✕ pode estar lá.</p>` : ""}`
+    : "";
+  const velHtml = carregandoVel
+    ? `<span class="giro mini"></span> Medindo no Google (até 1 minuto)…`
+    : v?.ok
+      ? `<strong class="num">${v.nota ?? "—"}/100</strong> no celular · conteúdo principal em <strong>${fmtMs(v.campo_lcp_ms || v.lcp_ms)}</strong>${v.campo_lcp_ms ? " (visitantes reais)" : ""} · SEO ${v.seo ?? "—"} <button class="btn peq fant" id="rl-vel">Medir de novo</button>`
+      : `${v?.erro ? `<span class="muted">${esc(v.erro)}</span> ` : ""}<button class="btn peq" id="rl-vel">Medir velocidade no celular</button>`;
+  el.innerHTML = `<div class="rl-site">
+    <dl class="dl">
+      <dt>Endereço</dt><dd><a href="${esc(s.url_final)}" target="_blank" rel="noopener">${esc(hostDe(s.url_final))}</a> · ${esc(s.plataforma || "plataforma não identificada")} · ${fmtMs(s.ms)}</dd>
+      <dt>Básico</dt><dd>${sim(s.https, " HTTPS")} &nbsp; ${sim(s.viewport, " Adapta ao celular")} &nbsp; ${sim(s.whatsapp, " Link de WhatsApp")} &nbsp; ${sim(s.formulario, " Formulário")}</dd>
+      <dt>Na busca</dt><dd><strong>${esc(s.titulo || "(sem título)")}</strong><br><span class="muted">${esc(s.descricao || s.og_descricao || "(sem descrição)")}</span></dd>
+      ${s.h1 ? `<dt>Frase principal</dt><dd>“${esc(s.h1)}”</dd>` : ""}
+      <dt>Redes no site</dt><dd>${redes.length ? redes.map(([k, x]) => `<a href="${esc(linkRede(k, x))}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ") : '<span class="muted">nenhuma</span>'}</dd>
+      ${s.ano_rodape ? `<dt>Rodapé</dt><dd>© ${s.ano_rodape}</dd>` : ""}
+      <dt>Velocidade</dt><dd id="rl-vel-res">${velHtml}</dd>
+    </dl>
+    <h3 class="sub">Medição e anúncios no site</h3>
+    ${medicaoHtml}
+  </div>`;
+  const b = $("#rl-vel");
+  if (b) b.onclick = medirVelocidadeRel;
+}
+
+// Chamada à API que devolve o corpo como veio (código de página repassado pelo servidor).
+async function apiBruto(caminho, opcoes = {}) {
+  const headers = {};
+  const chave = ler("prosp.chave");
+  if (chave) headers["x-access-key"] = chave;
+  let body;
+  if (opcoes.body !== undefined) {
+    headers["content-type"] = "application/json";
+    body = JSON.stringify(opcoes.body);
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), opcoes.timeout || 45000);
+  try {
+    const r = await fetch(`/api/${caminho}`, { method: opcoes.method || "GET", headers, body, signal: ctrl.signal });
+    if (r.status === 401) throw new Error("Acesso negado.");
+    return r;
+  } catch (e) {
+    throw new Error(e.name === "AbortError" ? "O site demorou demais para responder." : e.message || "Sem conexão com o servidor.");
+  } finally {
+    clearTimeout(t);
+  }
+}
+const ehJson = (r) => (r.headers.get("content-type") || "").includes("application/json");
+
+// texto da página na codificação certa (a maioria é UTF-8; sites antigos usam ISO-8859-1)
+async function textoDaPagina(r) {
+  const bytes = new Uint8Array(await r.arrayBuffer()).subarray(0, 1_000_000);
+  let cs = r.headers.get("x-charset") || "";
+  if (!cs) cs = (new TextDecoder("windows-1252").decode(bytes.subarray(0, 4000)).match(/<meta[^>]+charset=["']?([\w-]+)/i)?.[1] || "utf-8").toLowerCase();
+  try {
+    return new TextDecoder(cs).decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+}
+
+// O servidor só repassa o código; a leitura roda aqui, no aparelho (não gasta o limite da Cloudflare).
+async function analisarNoAparelho(url) {
+  const r = await apiBruto(`relatorio/${E.rel.negId}/pagina`, { method: "POST", body: { url }, timeout: 45000 });
+  if (ehJson(r)) {
+    const e = await r.json();
+    if (!("ok" in e)) throw new Error(e.erro || `Erro ${r.status}`);
+    return { ok: false, url_informada: url, url_final: e.url_final, status: e.status, ms: e.ms, erro: e.erro };
+  }
+  const html = await textoDaPagina(r);
+  const dados = { urlInformada: url, urlFinal: r.headers.get("x-url-final") || url, status: Number(r.headers.get("x-status")) || 200, ms: Number(r.headers.get("x-ms")) || 0, bytes: html.length, html };
+  const proto = analisarHtml(html, dados.urlFinal);
+  const gtm = [];
+  for (const id of proto.tags.gtm.slice(0, 2)) {
+    try {
+      const g = await apiBruto(`relatorio/tag?id=${encodeURIComponent(id)}`, { timeout: 20000 });
+      if (g.ok && !ehJson(g)) gtm.push(await g.text());
+    } catch {}
+  }
+  let res = montarResultadoSite({ ...dados, gtm });
+  if (precisaGtag(res)) {
+    try {
+      const g = await apiBruto(`relatorio/tag?id=${encodeURIComponent(res.tags.ga4[0])}`, { timeout: 20000 });
+      if (g.ok && !ehJson(g)) res = montarResultadoSite({ ...dados, gtm, gtag: await g.text() });
+    } catch {}
+  }
+  return res;
+}
+
+async function analisarSiteRel() {
+  const url = $("#rl-url").value.trim();
+  if (!url) return $("#rl-url").focus();
+  const b = $("#rl-analisar");
+  b.disabled = true;
+  b.innerHTML = `<span class="giro mini"></span> Analisando…`;
+  try {
+    await salvarManualAgora();
+    const resultado = await analisarNoAparelho(url);
+    E.rel.d = await api(`relatorio/${E.rel.negId}/site`, { method: "POST", body: { resultado } });
+    const ig = $("#rl-ig-usuario");
+    const igColeta = E.rel.d.relatorio.coleta.manual?.instagram?.usuario;
+    if (ig && !ig.value && igColeta) {
+      ig.value = "@" + igColeta;
+      atualizarLinksManuais();
+    }
+    if ($("#rl-sem-site")) $("#rl-sem-site").checked = !!E.rel.d.relatorio.coleta.manual?.sem_site;
+    desenharResultadoSite();
+    desenharPontos();
+    if (!E.rel.d.relatorio.coleta.site?.ok) aviso(E.rel.d.relatorio.coleta.site?.erro || "O site não abriu", true);
+    b.textContent = "Analisar de novo";
+    if (E.rel.d.relatorio.coleta.site?.ok) medirVelocidadeRel();
+  } catch (e) {
+    aviso(e.message, true);
+    b.textContent = "Analisar site";
+  }
+  b.disabled = false;
+}
+
+async function medirVelocidadeRel() {
+  desenharResultadoSite(true);
+  try {
+    E.rel.d = await api(`relatorio/${E.rel.negId}/velocidade`, { method: "POST", timeout: 95000 });
+  } catch (e) {
+    aviso(e.message, true);
+  }
+  desenharResultadoSite();
+  desenharPontos();
+}
+
+// ---------- coleta: conferência manual
+function htmlColetaManual() {
+  const m = E.rel.d.relatorio.coleta.manual || {};
+  const ig = m.instagram || {};
+  const g = m.google || {};
+  const an = m.anuncios || {};
+  const ra = m.reclame_aqui || {};
+  const opc = (lista, atual) => lista.map(([v, t]) => `<option value="${v}" ${v === atual ? "selected" : ""}>${esc(t)}</option>`).join("");
+  return `
+    <h3 class="sub">Instagram</h3>
+    <div class="grade-2">
+      <div class="campo"><label for="rl-ig-usuario">Perfil</label><div class="linha"><input id="rl-ig-usuario" class="entrada" data-m="instagram.usuario" placeholder="@usuario" autocapitalize="off" value="${esc(ig.usuario ? "@" + ig.usuario : "")}"><a class="btn peq" id="rl-ig-link" target="_blank" rel="noopener">Abrir ↗</a></div></div>
+      <div class="campo"><label for="rl-ig-ult">Última publicação</label><input id="rl-ig-ult" type="date" class="entrada" data-m="instagram.ultima_postagem" value="${esc(ig.ultima_postagem || "")}"></div>
+      <div class="campo"><label for="rl-ig-seg">Seguidores</label><input id="rl-ig-seg" class="entrada num" data-m="instagram.seguidores" placeholder="11,3 mil" value="${esc(ig.seguidores || "")}"></div>
+      <div class="campo"><label for="rl-ig-pub">Publicações</label><input id="rl-ig-pub" class="entrada num" data-m="instagram.publicacoes" value="${esc(ig.publicacoes || "")}"></div>
+    </div>
+    <div class="campo"><label for="rl-ig-bio">Bio (o que a marca promete ali)</label><textarea id="rl-ig-bio" class="entrada" rows="2" data-m="instagram.bio">${esc(ig.bio || "")}</textarea></div>
+    <div class="campo"><label>O que mais aparece nas publicações</label><div class="pilulas" id="rl-ig-cont">${CONTEUDO_IG.map(
+      ([v, t]) => `<button type="button" class="pilula" data-cont="${v}" aria-pressed="${(ig.conteudo || []).includes(v)}">${t}</button>`
+    ).join("")}</div><p class="dica">Toque na ordem do que mais aparece.</p></div>
+
+    <h3 class="sub">Google Meu Negócio</h3>
+    <div class="grade-2">
+      <div class="campo"><label for="rl-g-nota">Nota</label><div class="linha"><input id="rl-g-nota" class="entrada num" data-m="google.nota" placeholder="4,6" value="${esc(g.nota || "")}"><a class="btn peq" id="rl-g-link" target="_blank" rel="noopener">Maps ↗</a></div></div>
+      <div class="campo"><label for="rl-g-aval">Avaliações</label><input id="rl-g-aval" class="entrada num" data-m="google.avaliacoes" placeholder="787" value="${esc(g.avaliacoes || "")}"></div>
+    </div>
+    <div class="campo"><label for="rl-g-desc">Descrição do perfil</label><textarea id="rl-g-desc" class="entrada" rows="2" data-m="google.descricao">${esc(g.descricao || "")}</textarea></div>
+    <div class="campo"><label for="rl-g-resp">Responde às avaliações?</label><select id="rl-g-resp" class="entrada" data-m="google.responde"><option value="">Não conferi</option>${opc([["sim", "Sim"], ["as_vezes", "Às vezes"], ["nao", "Não"]], g.responde)}</select></div>
+
+    <h3 class="sub">Anúncios ativos</h3>
+    <div class="grade-2">
+      <div class="campo"><label for="rl-an-meta">Na Meta (Instagram e Facebook)</label><div class="linha"><select id="rl-an-meta" class="entrada" data-m="anuncios.meta"><option value="">Não conferi</option>${opc([["sim", "Tem anúncios"], ["nao", "Sem anúncios"]], an.meta)}</select><a class="btn peq" id="rl-an-meta-link" target="_blank" rel="noopener">Conferir ↗</a></div></div>
+      <div class="campo"><label for="rl-an-google">No Google</label><div class="linha"><select id="rl-an-google" class="entrada" data-m="anuncios.google"><option value="">Não conferi</option>${opc([["sim", "Tem anúncios"], ["nao", "Sem anúncios"]], an.google)}</select><a class="btn peq" id="rl-an-google-link" target="_blank" rel="noopener">Conferir ↗</a></div></div>
+    </div>
+
+    <h3 class="sub">Reclame Aqui</h3>
+    <div class="grade-2">
+      <div class="campo"><label for="rl-ra-rep">Reputação</label><div class="linha"><select id="rl-ra-rep" class="entrada" data-m="reclame_aqui.reputacao"><option value="">Não conferi</option>${opc(
+        REPUTACOES.map((r) => [r, r]),
+        ra.reputacao
+      )}</select><a class="btn peq" id="rl-ra-link" target="_blank" rel="noopener">Abrir ↗</a></div></div>
+      <div class="campo"><label for="rl-ra-nota">Nota (0 a 10)</label><input id="rl-ra-nota" class="entrada num" data-m="reclame_aqui.nota" placeholder="7,8" value="${esc(ra.nota || "")}"></div>
+    </div>
+
+    <h3 class="sub">O que mais você notou</h3>
+    <div class="campo"><textarea id="rl-obs" class="entrada" rows="3" data-m="observacoes" placeholder="Ex.: o YouTube tem bons vídeos educativos, mas pouca audiência. Entra na redação.">${esc(m.observacoes || "")}</textarea></div>`;
+}
+
+function lerManual() {
+  const m = { instagram: {}, google: {}, anuncios: {}, reclame_aqui: {}, observacoes: "" };
+  $$("[data-m]", $("#rl-coleta")).forEach((el) => gravarCaminho(m, el.dataset.m, el.value));
+  m.instagram.usuario = String(m.instagram.usuario || "").replace(/^@/, "").trim();
+  m.instagram.conteudo = E.rel.conteudoIg ?? (E.rel.d.relatorio.coleta.manual?.instagram?.conteudo || []);
+  m.sem_site = !!$("#rl-sem-site")?.checked;
+  return m;
+}
+
+function atualizarLinksManuais() {
+  const L = E.rel.d.links || {};
+  const ig = String($("#rl-ig-usuario")?.value || "").replace(/^@/, "").trim();
+  const set = (id, url) => {
+    const a = $(id);
+    if (a) a.href = url || "#";
+  };
+  set("#rl-ig-link", ig ? `https://www.instagram.com/${encodeURIComponent(ig)}/` : L.instagram);
+  set("#rl-g-link", L.google_maps);
+  set("#rl-an-meta-link", L.meta_anuncios);
+  set("#rl-an-google-link", L.google_anuncios);
+  set("#rl-ra-link", L.reclame_aqui);
+}
+
+function ligarColeta() {
+  const sec = $("#rl-coleta");
+  $("#rl-analisar").onclick = analisarSiteRel;
+  $("#rl-url").onkeydown = (ev) => ev.key === "Enter" && analisarSiteRel();
+  atualizarLinksManuais();
+  E.rel.conteudoIg = null;
+  sec.addEventListener("input", (ev) => {
+    if (!ev.target.closest("[data-m]")) return;
+    if (ev.target.id === "rl-ig-usuario") atualizarLinksManuais();
+    agendarManual();
+  });
+  sec.addEventListener("change", (ev) => {
+    if (ev.target.closest("[data-m]") || ev.target.id === "rl-sem-site") agendarManual(true);
+  });
+  $("#rl-ig-cont").onclick = (ev) => {
+    const b = ev.target.closest("[data-cont]");
+    if (!b) return;
+    const atual = E.rel.conteudoIg ?? [...(E.rel.d.relatorio.coleta.manual?.instagram?.conteudo || [])];
+    const i = atual.indexOf(b.dataset.cont);
+    if (i >= 0) atual.splice(i, 1);
+    else atual.push(b.dataset.cont);
+    E.rel.conteudoIg = atual;
+    $$("[data-cont]", $("#rl-ig-cont")).forEach((x) => x.setAttribute("aria-pressed", String(atual.includes(x.dataset.cont))));
+    agendarManual(true);
+  };
+}
+
+function agendarManual(rapido = false) {
+  clearTimeout(E.rel.timers.manual);
+  E.rel.manualPendente = true;
+  E.rel.timers.manual = setTimeout(salvarManualAgora, rapido ? 300 : 1000);
+}
+
+async function salvarManualAgora() {
+  clearTimeout(E.rel.timers.manual);
+  if (!E.rel?.manualPendente || !$("#rl-coleta")) return;
+  E.rel.manualPendente = false;
+  try {
+    const d = await api(`relatorio/${E.rel.negId}/manual`, { method: "PUT", body: { manual: lerManual() }, silencioso: true });
+    E.rel.d = { ...d, relatorio: { ...d.relatorio } };
+    E.rel.conteudoIg = null;
+    desenharPontos();
+    $("#rl-salvo") && ($("#rl-salvo").textContent = "Conferência salva");
+  } catch (e) {
+    aviso(e.message, true);
+  }
+}
+
+// ---------- pontos encontrados + escrever
+function desenharPontos() {
+  const el = $("#rl-pontos");
+  if (!el) return;
+  const d = E.rel.d;
+  const obs = d.observacoes || [];
+  const creditos = obs.filter((o) => o.tipo === "credito");
+  const pontos = obs.filter((o) => o.tipo === "ponto");
+  el.innerHTML = `<h2><span class="rl-n">2</span> O que a leitura encontrou</h2>
+    <p>Fatos que a coleta mostra até agora. A redação usa só isto (e o que você anotou) — nada além.</p>
+    ${
+      obs.length
+        ? `<ul class="rl-obs">${[...creditos, ...pontos]
+            .map(
+              (o) => `<li class="${o.tipo}"><span class="selo ${o.tipo === "credito" ? "ok" : ""}">${esc(o.tipo === "credito" ? "Ponto forte" : o.area)}</span><span>${esc(o.fato)}</span></li>`
+            )
+            .join("")}</ul>`
+        : `<div class="status-linha">Analise o site ou preencha a conferência para aparecerem os pontos.</div>`
+    }
+    <div class="acoes-bloco">
+      <button class="btn" id="rl-regras">Rascunho sem IA</button>
+      <button class="btn prim" id="rl-ia" ${d.ia ? "" : "disabled title='Coloque a chave da Anthropic em Ajustes → IA'"}>${ico("robo")} Escrever com IA</button>
+    </div>
+    ${d.ia ? "" : `<p class="dica" style="text-align:right">Para a IA escrever, coloque a chave da Anthropic em <a href="#/ajustes" data-ir="aj-ia">Ajustes → IA</a>.</p>`}`;
+  $("#rl-regras").onclick = () => redigirRel("regras");
+  $("#rl-ia").onclick = () => redigirRel("ia");
+}
+
+async function redigirRel(modo) {
+  const c = E.rel.c;
+  const temTexto = String(c.abertura || "").trim() || (c.apontamentos || []).some((a) => String(a.titulo || "").trim());
+  if (temTexto && !(await confirmar("Escrever de novo?", "A abertura, os números, os canais e os apontamentos atuais serão substituídos pelo novo rascunho. Os textos fixos (ponto de partida, destaque e convite) ficam.", "Escrever de novo"))) return;
+  const b = $(modo === "ia" ? "#rl-ia" : "#rl-regras");
+  const rotulo = b.innerHTML;
+  b.disabled = true;
+  b.innerHTML = `<span class="giro mini"></span> ${modo === "ia" ? "Escrevendo…" : "Montando…"}`;
+  try {
+    await salvarManualAgora();
+    await salvarRelPendente();
+    const r = await api(`relatorio/${E.rel.negId}/redigir`, { method: "POST", body: { modo }, timeout: 100000 });
+    E.rel.c = r.conteudo;
+    E.rel.d.relatorio.status = r.status;
+    desenharTextoRel();
+    atualizarPrevia(true);
+    atualizarStatusRel(r.status);
+    aviso(modo === "ia" ? "Rascunho escrito. Revise antes de aprovar." : "Rascunho montado. Revise antes de aprovar.");
+    $("#rl-texto")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    aviso(e.message, true);
+  }
+  b.disabled = modo === "ia" && !E.rel.d.ia;
+  b.innerHTML = rotulo;
+}
+
+// ---------- texto do relatório
+function campoRel(caminho, rotulo, { area = false, linhas = 3, dica = "", attrs = "" } = {}) {
+  const v = lerCaminho(E.rel.c, caminho) ?? "";
+  const id = `rlc-${caminho.replace(/\./g, "-")}`;
+  return `<div class="campo"><label for="${id}">${rotulo}</label>${
+    area
+      ? `<textarea id="${id}" class="entrada" rows="${linhas}" data-c="${caminho}" ${attrs}>${esc(v)}</textarea>`
+      : `<input id="${id}" class="entrada" data-c="${caminho}" value="${esc(v)}" ${attrs}>`
+  }${dica ? `<p class="dica">${dica}</p>` : ""}</div>`;
+}
+
+function desenharTextoRel() {
+  const el = $("#rl-texto");
+  if (!el) return;
+  const c = E.rel.c;
+  const corSite = E.rel.d.relatorio.coleta.site?.cor_marca;
+  el.innerHTML = `<h2><span class="rl-n">3</span> Texto do relatório</h2>
+    <p>Tudo aqui é editável e é salvo enquanto você escreve. Bloco vazio não aparece. Use **assim** para negrito.</p>
+    <div class="grade-2">
+      ${campoRel("empresa", "Nome da empresa")}
+      <div class="campo"><label for="rlc-cor">Cor de destaque</label><div class="linha">
+        <input id="rlc-cor" type="color" class="cor" data-c="cor" value="${esc(c.cor || "#e23917")}">
+        <button type="button" class="btn peq" data-cor="#e23917">Tangit</button>
+        ${corSite ? `<button type="button" class="btn peq" data-cor="${esc(corSite)}"><span class="bola" style="background:${esc(corSite)}"></span>Cor do site</button>` : ""}
+      </div></div>
+    </div>
+    ${campoRel("abertura", "Abertura", { area: true, linhas: 5 })}
+    <h3 class="sub">Números em destaque</h3>
+    <div id="rl-numeros"></div>
+    <h3 class="sub">O ponto de partida</h3>
+    ${campoRel("tese", "Frase", { area: true, linhas: 2 })}
+    ${campoRel("tese_nota", "Complemento", { area: true, linhas: 3 })}
+    <h3 class="sub">O que a marca diz em cada canal</h3>
+    <div id="rl-canais"></div>
+    ${campoRel("canais_leitura", "Leitura das frases", { area: true, linhas: 2 })}
+    <h3 class="sub">Apontamentos</h3>
+    <div id="rl-aps"></div>
+    <h3 class="sub">Para onde isso aponta</h3>
+    ${campoRel("fecho", "Fecho", { area: true, linhas: 5 })}
+    ${campoRel("destaque", "Destaque (caixa colorida)", { area: true, linhas: 3 })}
+    <h3 class="sub">Convite</h3>
+    <div class="grade-2">${campoRel("cta.titulo", "Título")}${campoRel("cta.botao", "Botão")}</div>
+    ${campoRel("cta.texto", "Texto", { area: true, linhas: 2 })}
+    <div class="grade-2">${campoRel("cta.whatsapp", "WhatsApp do botão", { attrs: 'inputmode="tel"' })}${campoRel("cta.mensagem", "Mensagem que abre no WhatsApp")}</div>
+    <h3 class="sub">Rodapé</h3>
+    <div class="campo"><label for="rlc-fontes">Fontes consultadas</label><input id="rlc-fontes" class="entrada" data-fontes="1" value="${esc((c.fontes || []).join(", "))}"><p class="dica">Separadas por vírgula. Aparecem no rodapé: “Leitura preliminar, feita em … a partir de …”.</p></div>`;
+  desenharListasRel();
+  el.oninput = (ev) => {
+    const t = ev.target;
+    if (t.dataset.c) gravarCaminho(E.rel.c, t.dataset.c, t.value);
+    else if (t.dataset.fontes) E.rel.c.fontes = t.value.split(",").map((x) => x.trim()).filter(Boolean);
+    else if (t.dataset.lista) {
+      const lista = (E.rel.c[t.dataset.lista] ||= []);
+      (lista[Number(t.dataset.i)] ||= {})[t.dataset.campo] = t.value;
+    } else return;
+    mudouRel();
+  };
+  el.onclick = (ev) => {
+    const cor = ev.target.closest("[data-cor]");
+    if (cor) {
+      E.rel.c.cor = cor.dataset.cor;
+      $("#rlc-cor").value = cor.dataset.cor;
+      return mudouRel();
+    }
+    const b = ev.target.closest("[data-acao-lista]");
+    if (!b) return;
+    const nome = b.dataset.lista;
+    const lista = (E.rel.c[nome] ||= []);
+    const i = Number(b.dataset.i);
+    const acao = b.dataset.acaoLista;
+    if (acao === "add") lista.push(nome === "numeros" ? { valor: "", rotulo: "" } : nome === "canais" ? { frase: "", canal: "" } : { area: "", titulo: "", apoio: "" });
+    if (acao === "sugestao") lista.push({ valor: b.dataset.valor, rotulo: b.dataset.rotulo });
+    if (acao === "del") lista.splice(i, 1);
+    if (acao === "sobe" && i > 0) [lista[i - 1], lista[i]] = [lista[i], lista[i - 1]];
+    if (acao === "desce" && i < lista.length - 1) [lista[i + 1], lista[i]] = [lista[i], lista[i + 1]];
+    desenharListasRel();
+    mudouRel();
+  };
+}
+
+function desenharListasRel() {
+  const c = E.rel.c;
+  const btn = (lista, i, acao, rot, titulo) => `<button type="button" class="btn peq fant ico-btn" data-acao-lista="${acao}" data-lista="${lista}" data-i="${i}" title="${titulo}" aria-label="${titulo}">${rot}</button>`;
+  const inp = (lista, i, campo, v, ph, extra = "") => `<input class="entrada" data-lista="${lista}" data-i="${i}" data-campo="${campo}" value="${esc(v || "")}" placeholder="${esc(ph)}" ${extra}>`;
+  const nums = c.numeros || [];
+  const usados = new Set(nums.map((n) => `${n.valor}|${n.rotulo}`));
+  const sugest = (E.rel.d.numeros_sugeridos || []).filter((s) => !usados.has(`${s.valor}|${s.rotulo}`));
+  $("#rl-numeros").innerHTML = `${nums
+    .map((n, i) => `<div class="rl-linha-num">${inp("numeros", i, "valor", n.valor, "23", 'style="width:96px"')}${inp("numeros", i, "rotulo", n.rotulo, "anos de operação")}${btn("numeros", i, "del", "✕", "Remover")}</div>`)
+    .join("")}
+    <div class="linha rl-add">${nums.length < 4 ? `<button type="button" class="btn peq" data-acao-lista="add" data-lista="numeros">${ico("mais")} Número</button>` : ""}${
+      nums.length < 4 ? sugest.map((s) => `<button type="button" class="pilula" data-acao-lista="sugestao" data-lista="numeros" data-valor="${esc(s.valor)}" data-rotulo="${esc(s.rotulo)}">+ ${esc(s.valor)} ${esc(s.rotulo)}</button>`).join("") : ""
+    }</div>`;
+  const canais = c.canais || [];
+  $("#rl-canais").innerHTML = `${canais
+    .map((x, i) => `<div class="rl-linha-canal">${inp("canais", i, "frase", x.frase, "Os pneus mais baratos de SP")}${inp("canais", i, "canal", x.canal, "Instagram", 'style="width:150px"')}${btn("canais", i, "del", "✕", "Remover")}</div>`)
+    .join("")}
+    <div class="linha rl-add"><button type="button" class="btn peq" data-acao-lista="add" data-lista="canais">${ico("mais")} Canal</button>${
+      canais.length ? "" : `<span class="dica">Sem frases, a seção não aparece. Com 2 ou mais, mostra como a marca se apresenta em cada lugar.</span>`
+    }</div>`;
+  const aps = c.apontamentos || [];
+  $("#rl-aps").innerHTML = `${aps
+    .map(
+      (a, i) => `<div class="rl-ap">
+        <div class="rl-ap-cab"><span class="rl-n peq">${String(i + 1).padStart(2, "0")}</span>
+          <input class="entrada rl-area" list="rl-areas" data-lista="apontamentos" data-i="${i}" data-campo="area" value="${esc(a.area || "")}" placeholder="Área">
+          <span class="rl-ap-acoes">${btn("apontamentos", i, "sobe", "↑", "Subir")}${btn("apontamentos", i, "desce", "↓", "Descer")}${btn("apontamentos", i, "del", "✕", "Remover")}</span></div>
+        <textarea class="entrada rl-ap-tit" rows="2" data-lista="apontamentos" data-i="${i}" data-campo="titulo" placeholder="O achado e a consequência, numa linha">${esc(a.titulo || "")}</textarea>
+        <textarea class="entrada" rows="2" data-lista="apontamentos" data-i="${i}" data-campo="apoio" placeholder="A evidência: números, nomes, o que foi visto">${esc(a.apoio || "")}</textarea>
+      </div>`
+    )
+    .join("")}
+    <datalist id="rl-areas">${AREAS_REL.map((a) => `<option value="${a}">`).join("")}</datalist>
+    <div class="linha rl-add">${aps.length < 6 ? `<button type="button" class="btn peq" data-acao-lista="add" data-lista="apontamentos">${ico("mais")} Apontamento</button>` : ""}</div>`;
+}
+
+// ---------- prévia, gravação e publicação
+const htmlPrevia = () => {
+  const r = E.rel.d.relatorio;
+  const faixa = !r.link
+    ? "Prévia — o cliente só vê esta página depois que você aprovar"
+    : r.status === "aprovado"
+      ? "Prévia — esta é a versão publicada"
+      : "Prévia — as mudanças só chegam ao cliente quando você publicar";
+  return paginaRelatorio(E.rel.c, { previa: faixa });
+};
+
+function atualizarPrevia(agora = false) {
+  clearTimeout(E.rel.timers.previa);
+  const fazer = () => {
+    const f = $("#rl-iframe");
+    if (!f || getComputedStyle(f.closest(".rl-previa")).display === "none") return;
+    const rolagem = f.contentWindow?.scrollY || 0;
+    f.srcdoc = htmlPrevia();
+    f.onload = () => rolagem && f.contentWindow?.scrollTo(0, rolagem);
+  };
+  if (agora) fazer();
+  else E.rel.timers.previa = setTimeout(fazer, 350);
+}
+
+function mudouRel() {
+  E.rel.pendente = true;
+  $("#rl-salvo") && ($("#rl-salvo").textContent = "Editando…");
+  atualizarPrevia();
+  clearTimeout(E.rel.timers.salvar);
+  E.rel.timers.salvar = setTimeout(salvarRelPendente, 1000);
+}
+
+async function salvarRelPendente() {
+  clearTimeout(E.rel?.timers?.salvar);
+  if (!E.rel?.pendente) return E.rel?.salvando;
+  E.rel.pendente = false;
+  const negId = E.rel.negId;
+  E.rel.salvando = api(`relatorio/${negId}/conteudo`, { method: "PUT", body: { conteudo: E.rel.c }, silencioso: true })
+    .then((r) => {
+      if (E.rel?.negId !== negId) return;
+      E.rel.d.relatorio.status = r.status;
+      atualizarStatusRel(r.status);
+      $("#rl-salvo") && ($("#rl-salvo").textContent = "Salvo");
+    })
+    .catch((e) => {
+      if (E.rel?.negId === negId) E.rel.pendente = true;
+      aviso(`Não salvou o texto: ${e.message}`, true);
+    });
+  return E.rel.salvando;
+}
+
+function atualizarStatusRel(st) {
+  const el = $("#rl-status");
+  const mudouFaixa = E.rel.ultimoStatus && E.rel.ultimoStatus !== st;
+  E.rel.ultimoStatus = st;
+  if (el) el.innerHTML = seloRelatorio(st);
+  desenharPublicacao();
+  if (mudouFaixa) atualizarPrevia();
+}
+
+function desenharPublicacao() {
+  const el = $("#rl-publicacao");
+  if (!el) return;
+  const r = E.rel.d.relatorio;
+  const ab = $("#rl-abrir-link");
+  if (ab) {
+    ab.hidden = !r.link;
+    ab.href = linkInterno(r.link);
+  }
+  const btn = $("#rl-aprovar");
+  if (btn) btn.innerHTML = `${ico("aprovar")} ${r.publicado && r.link ? (r.status === "alterado" ? "Publicar mudanças" : "Aprovado") : "Aprovar e publicar"}`;
+  if (btn) btn.disabled = r.status === "aprovado" && !!r.link;
+  if (!r.link) return (el.innerHTML = "");
+  const vistas = r.visualizacoes || 0;
+  el.innerHTML = `<section class="bloco rl-pub">
+    <div class="linha" style="flex-wrap:wrap">
+      <strong>${r.status === "alterado" ? "Publicado — há mudanças ainda não publicadas" : "Publicado"}</strong>
+      <span class="dica">${r.enviado_em ? `Enviado ${esc(quando(r.enviado_em))}` : "Ainda não enviado"} · ${vistas ? `aberto ${plural(vistas, "vez", "vezes")}${r.ultima_visualizacao_em ? `, a última ${esc(quando(r.ultima_visualizacao_em))}` : ""}` : "ainda não aberto pelo cliente"}</span>
+    </div>
+    <div class="linha rl-link"><code>${esc(r.link)}</code>
+      <button class="btn peq" id="rl-copiar">${ico("copiar")} Copiar</button>
+      <a class="btn peq" href="${esc(linkInterno(r.link))}" target="_blank" rel="noopener">Abrir ↗</a>
+      <button class="btn peq fant perigo" id="rl-despublicar">Tirar do ar</button>
+    </div>
+    <p class="dica">Para enviar: use <code>{relatorio}</code> na mensagem (Ajustes → Mensagens) ou “Pôr o link na mensagem”, na ficha. Sozinho na última linha, o link sai com o cartão de prévia no WhatsApp.</p>
+  </section>`;
+  $("#rl-copiar").onclick = () => copiar(r.link, "Link copiado");
+  $("#rl-despublicar").onclick = async () => {
+    if (!(await confirmar("Tirar do ar", "O link para de funcionar para o cliente. Dá para aprovar de novo depois (o endereço continua o mesmo).", "Tirar do ar", true))) return;
+    try {
+      await api(`relatorio/${E.rel.negId}/despublicar`, { method: "POST" });
+      E.rel.d = await api(`relatorio/${E.rel.negId}`);
+      atualizarStatusRel(E.rel.d.relatorio.status);
+      aviso("Pré-relatório tirado do ar");
+    } catch (e) {
+      aviso(e.message, true);
+    }
+  };
+}
+
+async function aprovarRelatorio() {
+  const c = E.rel.c;
+  if (!String(c.empresa || "").trim()) return aviso("Falta o nome da empresa", true);
+  if (!String(c.abertura || "").trim() && !(c.apontamentos || []).some((a) => String(a.titulo || "").trim())) return aviso("Escreva a abertura e os apontamentos antes de aprovar", true);
+  const novo = !E.rel.d.relatorio.link;
+  const ok = await confirmar(
+    novo ? "Aprovar e publicar" : "Publicar as mudanças",
+    novo
+      ? "A página fica no ar no endereço tangit.com.br/…-relatorio-…, mas só chega ao cliente quando você enviar o link (pela mensagem do primeiro contato ou pela ficha)."
+      : "A página publicada passa a mostrar a versão atual. O link continua o mesmo.",
+    novo ? "Aprovar e publicar" : "Publicar"
+  );
+  if (!ok) return;
+  const b = $("#rl-aprovar");
+  b.disabled = true;
+  try {
+    await salvarManualAgora();
+    E.rel.pendente = false;
+    clearTimeout(E.rel.timers.salvar);
+    const r = await api(`relatorio/${E.rel.negId}/aprovar`, { method: "POST", body: { conteudo: E.rel.c } });
+    E.rel.d = await api(`relatorio/${E.rel.negId}`);
+    E.rel.c = JSON.parse(JSON.stringify(E.rel.d.relatorio.conteudo));
+    atualizarStatusRel(E.rel.d.relatorio.status);
+    $("#rl-salvo").textContent = "";
+    checarNovidades(true);
+    aviso(novo ? "Publicado. O link entra no lugar de {relatorio} nas mensagens." : "Mudanças publicadas");
+    atualizarPrevia(true);
+    $("#rl-publicacao")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    aviso(e.message, true);
+    b.disabled = false;
+  }
+}
+
+// abre o editor (da fila de aprovação ou da ficha)
+function abrirEditorRelatorio(negId, voltarPara) {
+  E.rel = { negId: Number(negId), d: null, c: null, timers: {}, pendente: false, salvando: null, voltarPara, veioDe: true };
+  fecharGaveta();
+  location.hash = `#/relatorio/${negId}`;
 }
 
 // ============================================================ início
