@@ -20,10 +20,14 @@
       </div>
       <a href="#/busca" data-rota="busca"><span class="ico" data-ico="busca"></span><span>Buscar</span></a>
       <a href="#/listas" data-rota="listas"><span class="ico" data-ico="listas"></span><span>Listas</span></a>
-      <a href="#/funil" data-rota="funil"><span class="ico" data-ico="funil"></span><span>Funil</span></a>
+      <a href="#/funil" data-rota="funil"><span class="ico" data-ico="funil"></span><span>Funil</span><span class="badge" id="badge-funil" hidden title="Contatos com mensagens novas"></span></a>
+      <a href="#/aprovar" data-rota="aprovar"><span class="ico" data-ico="aprovar"></span><span>Aprovar</span><span class="badge" id="badge-aprovar" hidden title="Primeiros contatos aguardando aprovação"></span></a>
       <a href="#/ajustes" data-rota="ajustes"><span class="ico" data-ico="ajustes"></span><span>Ajustes</span></a>
     </nav>
-    <main id="conteudo" class="conteudo" tabindex="-1"></main>
+    <div class="principal">
+      <div id="faixa" class="faixa" hidden></div>
+      <main id="conteudo" class="conteudo" tabindex="-1"></main>
+    </div>
   </div>
 
   <div id="selecao" class="selecao" hidden></div>

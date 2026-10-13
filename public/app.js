@@ -1,6 +1,8 @@
 /* Prospecção — interface (HTML/JS puro, sem dependências).
    Dados: Minha Receita (via /api/receita), cidades e CNAEs do IBGE (via /api/ibge),
-   listas e funil no D1 da Cloudflare (via /api/data). */
+   listas e funil no D1 da Cloudflare (via /api/data), automação de WhatsApp (via /api/automacao). */
+
+import { titulo, semSufixo, comparavel } from "./nomes.js";
 
 // ============================================================ ícones
 const SVG = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -30,6 +32,14 @@ const ICONES = {
   lixo: SVG('<path d="M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13"/>'),
   google: SVG('<path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
   vazio: SVG('<path d="M4 7l8-4 8 4-8 4z"/><path d="M4 7v10l8 4 8-4V7M12 11v10"/>'),
+  aprovar: SVG('<path d="M20.5 3.5L10 14"/><path d="M20.5 3.5l-6.3 17-4.2-6.5-6.5-4.2z"/>'),
+  robo: SVG('<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4.5V8M9.5 13h.01M14.5 13h.01M10 16.2h4"/>'),
+  alerta: SVG('<path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.4h.01"/>'),
+  check: SVG('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+  pausa: SVG('<path d="M9 6v12M15 6v12"/>'),
+  play: SVG('<path d="M8 5.5v13l10.5-6.5z"/>'),
+  pessoa: SVG('<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>'),
+  site: SVG('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17"/>'),
 };
 const ico = (n) => `<span class="ico">${ICONES[n] || ""}</span>`;
 document.querySelectorAll("[data-ico]").forEach((el) => (el.innerHTML = ICONES[el.dataset.ico]));
@@ -56,21 +66,6 @@ function gravar(chave, valor) {
   } catch {}
 }
 
-const MINUSC = new Set(["de", "da", "do", "das", "dos", "e", "em", "na", "no", "nas", "nos", "para", "com", "a", "o", "ao"]);
-const MAIUSC = new Set(["ltda", "me", "epp", "eireli", "s/a", "sa", "s.a", "s.a.", "cia", "mei", "ii", "iii", "iv", "slu", "ss", "lp", "tv", "sp", "rj", "mg", "pr", "sc", "rs", "ti"]);
-function titulo(s) {
-  if (!s) return "";
-  return String(s)
-    .toLowerCase()
-    .split(/(\s+|-|\/)/)
-    .map((p, i) => {
-      const limpo = p.replace(/[.,()]/g, "");
-      if (MAIUSC.has(limpo)) return p.toUpperCase();
-      if (i > 0 && MINUSC.has(limpo)) return p;
-      return p.charAt(0).toUpperCase() + p.slice(1);
-    })
-    .join("");
-}
 
 const fmtCNPJ = (c) => {
   const d = digitos(c).padStart(14, "0");
@@ -101,7 +96,7 @@ function dataHora(s) {
 const plural = (n, um, varios) => `${n.toLocaleString("pt-BR")} ${n === 1 ? um : varios}`;
 
 // ---------- leitura dos registros da Receita ----------
-const nomeDe = (r) => titulo((r.nome_fantasia || "").trim() || r.razao_social || "Sem nome");
+const nomeDe = (r) => titulo(semSufixo((r.nome_fantasia || "").trim() || r.razao_social || "")) || "Sem nome";
 const ativa = (r) => r.situacao_cadastral === 2 || norm(r.descricao_situacao_cadastral) === "ativa";
 const ehMatriz = (r) => r.identificador_matriz_filial === 1;
 const anoAbertura = (r) => (r.data_inicio_atividade ? parseInt(String(r.data_inicio_atividade).slice(0, 4), 10) : null);
@@ -126,11 +121,16 @@ function porteDe(r) {
 
 function telefonesDe(r) {
   const brutos = [r.ddd_telefone_1, r.ddd_telefone_2].map(digitos).filter((d) => d.length >= 10 && d.length <= 11);
-  return [...new Set(brutos)].map((d) => ({
-    digitos: d,
-    celular: d.length === 11 && d[2] === "9",
-    exib: d.length === 11 ? `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}` : `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`,
-  }));
+  return [...new Set(brutos)].map((d) => {
+    // a Receita ainda guarda muito celular no formato antigo, sem o 9 (ex.: 15 9149-5729)
+    const antigo = d.length === 10 && /[6-9]/.test(d[2]);
+    return {
+      digitos: d,
+      celular: (d.length === 11 && d[2] === "9") || antigo,
+      whats: antigo ? d.slice(0, 2) + "9" + d.slice(2) : d,
+      exib: d.length === 11 ? `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}` : `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`,
+    };
+  });
 }
 
 function enderecoDe(r) {
@@ -194,6 +194,7 @@ const E = {
   municipios: {},
   lista: { id: null, empresas: [], carregando: false, filtro: "" },
   funil: { negocios: [], carregando: false, filtro: "" },
+  aprovar: { fila: null, painel: null },
   gaveta: null,
 };
 
@@ -219,23 +220,81 @@ async function api(caminho, opcoes = {}) {
   } finally {
     clearTimeout(t);
   }
-  if (resp.status === 401) {
+  if (resp.status === 401 && !caminho.startsWith("automacao/tick")) {
+    if (opcoes.silencioso) throw new Error("Acesso negado.");
     const ok = await pedirChave();
     if (ok) return api(caminho, opcoes);
     throw new Error("Acesso negado.");
   }
   const dados = await resp.json().catch(() => null);
+  if (resp.status === 503 && dados?.erro === "chave_nao_configurada") {
+    semChaveConfigurada();
+    throw new Error("Falta configurar a chave de acesso (ACCESS_KEY) no Cloudflare.");
+  }
   if (!resp.ok) throw new Error(dados?.erro || `Erro ${resp.status}`);
   return dados;
+}
+
+// O sistema só funciona com a chave de acesso ativada (dados pessoais + envio pelo seu WhatsApp).
+let avisouSemChave = false;
+function semChaveConfigurada() {
+  if (avisouSemChave) return;
+  avisouSemChave = true;
+  $("#conteudo").innerHTML = `<div class="vazio" style="max-width:560px">${ico("alerta")}<h3>Falta ativar a chave de acesso</h3>
+    <p>Por segurança, o sistema só abre com a chave de acesso ligada: ele guarda dados de pessoas (LGPD) e envia mensagens pelo seu WhatsApp.</p>
+    <p>No Safari, em <strong>dash.cloudflare.com</strong>: menu <strong>Compute (Workers)</strong> → <strong>Workers &amp; Pages</strong> → projeto <strong>prospeccao-tangit</strong> → aba <strong>Settings</strong> → seção <strong>Variables and Secrets</strong> → <strong>Add</strong> → Type <strong>Secret</strong>, Variable name <code>ACCESS_KEY</code>, Value = uma senha longa → <strong>Save</strong>. Depois, aba <strong>Deployments</strong> → <strong>⋯</strong> no deploy mais recente → <strong>Retry deployment</strong>.</p></div>`;
 }
 
 async function carregarResumo() {
   try {
     E.resumo = await api("data/resumo");
+    atualizarBadges(E.resumo.pendentes, E.resumo.com_respostas);
   } catch (e) {
     aviso(e.message, true);
   }
 }
+
+// ============================================================ novidades (badges, alerta do WhatsApp, telas abertas)
+const NOV = { mudou_em: null };
+function atualizarBadges(pendentes, respostas) {
+  const b1 = $("#badge-aprovar");
+  const b2 = $("#badge-funil");
+  if (b1 && pendentes !== undefined) {
+    b1.hidden = !pendentes;
+    b1.textContent = pendentes > 99 ? "99+" : String(pendentes || "");
+  }
+  if (b2 && respostas !== undefined) {
+    b2.hidden = !respostas;
+    b2.textContent = respostas > 99 ? "99+" : String(respostas || "");
+  }
+}
+function atualizarFaixa(alerta) {
+  const f = $("#faixa");
+  if (!f) return;
+  f.hidden = !alerta;
+  if (alerta) f.innerHTML = `${ico("alerta")}<span><strong>WhatsApp parado:</strong> ${esc(alerta)}. Os envios automáticos voltam sozinhos quando a conexão voltar. <a href="#/ajustes" data-ir="aj-whatsapp">Ver conexão</a></span>`;
+}
+async function checarNovidades(forcar = false) {
+  if (!forcar && document.visibilityState !== "visible") return;
+  let r;
+  try {
+    r = await api(`automacao/novidades?desde=${encodeURIComponent(NOV.mudou_em ?? "")}`, { silencioso: true, timeout: 15000 });
+  } catch {
+    return;
+  }
+  atualizarFaixa(r.gowa_alerta);
+  if (!r.mudou) return;
+  const primeira = NOV.mudou_em === null;
+  NOV.mudou_em = r.mudou_em;
+  atualizarBadges(r.pendentes, r.com_respostas);
+  if (primeira) return;
+  // algo mudou (resposta, envio, verificação): atualiza o que está aberto sem atrapalhar a digitação
+  if (E.ctx === "funil" && !arrastando) carregarFunil();
+  if (E.ctx === "aprovar") atualizarPainelAprovar();
+  if (E.gaveta?.negId) recarregarGaveta();
+}
+setInterval(checarNovidades, 20000);
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && checarNovidades());
 
 async function carregarCnaes() {
   if (E.cnaes) return E.cnaes;
@@ -479,9 +538,12 @@ async function renderizar() {
   } else if (pag === "funil") {
     E.ctx = "funil";
     await telaFunil(main);
+  } else if (pag === "aprovar") {
+    E.ctx = "aprovar";
+    await telaAprovar(main);
   } else if (pag === "ajustes") {
     E.ctx = "ajustes";
-    telaAjustes(main);
+    await telaAjustes(main, id);
   } else {
     E.ctx = "busca";
     telaBusca(main);
@@ -489,6 +551,16 @@ async function renderizar() {
   atualizarBarraSelecao();
 }
 window.addEventListener("hashchange", renderizar);
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest("a[data-ir]");
+  if (!a) return;
+  ev.preventDefault();
+  irParaAjuste(a.dataset.ir);
+});
+function irParaAjuste(secao) {
+  if (rota().pag === "ajustes") return $(`#${secao}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  location.hash = `#/ajustes/${secao}`;
+}
 
 // ============================================================ componente: resultados
 function selos(r) {
@@ -794,10 +866,14 @@ function exportarCSV(registros, nomeArquivo, extras = null) {
     if (extras) base.push(...extras.valores(r));
     return base;
   });
-  const csv = [cab, ...linhas]
-    .map((l) => l.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";"))
-    .join("\r\n");
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  baixarCSV([cab, ...linhas], nomeArquivo);
+  aviso(`${plural(registros.length, "empresa exportada", "empresas exportadas")}`);
+}
+
+// CSV com ; e BOM (abre direto no Excel e no Numbers com acentos)
+function baixarCSV(linhas, nomeArquivo) {
+  const csv = linhas.map((l) => l.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")).join("\r\n");
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `${nomeArquivo}-${hojeISO()}.csv`;
@@ -807,7 +883,6 @@ function exportarCSV(registros, nomeArquivo, extras = null) {
     URL.revokeObjectURL(a.href);
     a.remove();
   }, 1000);
-  aviso(`${plural(registros.length, "empresa exportada", "empresas exportadas")}`);
 }
 
 function redesenharAtual() {
@@ -1223,10 +1298,81 @@ function desenharLista() {
 }
 
 // ============================================================ tela: FUNIL
+let arrastando = false;
+
+// Nome para exibir: a Receita grava sem acento ("PADARIA PAO BOM"); se o nome comercial do WhatsApp
+// for o mesmo, ignorando acentos, usa a grafia dele ("Padaria Pão Bom").
+function nomeEmpresa(r, waNome) {
+  const base = nomeDe(r);
+  const wa = String(waNome || "").trim();
+  if (!wa) return base;
+  const waExib = semSufixo(wa === wa.toUpperCase() ? titulo(wa) : wa);
+  return comparavel(waExib) === comparavel(semSufixo((r.nome_fantasia || "").trim() || r.razao_social || "")) ? waExib : base;
+}
+const nomeNeg = (n) => (n.empresa ? nomeEmpresa(n.empresa, n.wa_nome) : n.contato_nome || "Contato sem nome");
+function subNeg(n) {
+  if (n.empresa) return `${titulo(n.empresa.municipio)} - ${n.empresa.uf}`;
+  if (n.fonte === "site") return `Site · ${n.origem || "formulário"}`;
+  return n.origem || "Contato";
+}
+function fmtTel(numero) {
+  let d = digitos(numero);
+  if (d.startsWith("55") && d.length >= 12) d = d.slice(2);
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return d;
+}
+const ROTULO_PASSO = {
+  enviar_primeiro: "Primeiro contato",
+  enviar_followup1: "Follow-up",
+  enviar_followup2: "Nova tentativa",
+  mover_outro_momento: "Sem resposta",
+  enviar_retomada: "Retomada",
+  encerrar: "Encerrar",
+};
+const passoLimpo = (p) => String(p || "").replace(/^enviando:/, "");
+const fmtCurto = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+};
+// "hoje, 10:37", "amanhã, 09:12", "qua, 21/10, 10:37"
+function quando(iso, comHora = true) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const mesmoDia = (a, b) => a.toDateString() === b.toDateString();
+  const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  let dia;
+  if (mesmoDia(d, new Date())) dia = "hoje";
+  else if (mesmoDia(d, new Date(Date.now() + 864e5))) dia = "amanhã";
+  else dia = d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" }).replace(/\./g, "");
+  return comHora ? `${dia}, ${hora}` : dia;
+}
+
+// Selos da automação no card do funil.
+function selosAuto(n, et) {
+  const s = [];
+  if (n.nao_lidas > 0) s.push(`<span class="selo ok forte">${ico("whats")}${n.nao_lidas === 1 ? "1 nova" : `${n.nao_lidas} novas`}</span>`);
+  const aberta = !et || et.tipo === "aberta";
+  const p = passoLimpo(n.passo);
+  if (n.optout) s.push(`<span class="selo perigo">Pediu para sair</span>`);
+  else if (n.automacao === "ativa") {
+    if (p === "enviar_primeiro") s.push(`<span class="selo acento">${ico("robo")}Envio aprovado</span>`);
+    else if (p === "mover_outro_momento" || p === "encerrar") s.push(`<span class="selo acento" title="Aguardando resposta">${ico("robo")}Aguardando</span>`);
+    else s.push(`<span class="selo acento" title="Próxima mensagem automática">${ico("robo")}${ROTULO_PASSO[p] || "Automação"} ${fmtCurto(n.proxima_acao_em)}</span>`);
+  } else if (n.automacao === "pausada") s.push(`<span class="selo aviso">${ico("pausa")}Pausada</span>`);
+  else if (n.automacao === "respondeu" && !n.nao_lidas) s.push(`<span class="selo ok">Respondeu</span>`);
+  if (aberta && !n.optout && (n.wa_status === "nao_tem" || n.wa_status === "sem_numero")) s.push(`<span class="selo perigo">Sem WhatsApp</span>`);
+  else if (aberta && et?.papel === "entrada" && n.automacao === "inativa")
+    s.push(n.wa_status === "tem" ? `<span class="selo">${ico("whats")}Pronto p/ aprovar</span>` : `<span class="selo">Conferindo WhatsApp…</span>`);
+  return s.join("");
+}
+
 async function telaFunil(main) {
   main.innerHTML = `
     <div class="topo"><h1>Funil</h1>
-      <input class="entrada" id="funil-filtro" placeholder="Filtrar empresas" style="width:200px;height:34px" value="${esc(E.funil.filtro)}">
+      <input class="entrada" id="funil-filtro" type="search" placeholder="Filtrar por nome ou telefone" style="width:230px;height:34px" value="${esc(E.funil.filtro)}">
+      <button class="btn" id="funil-contato" title="Contato sem CNPJ (indicação, pessoa física)">${ico("pessoa")} Contato</button>
       <button class="btn" id="funil-cnpj">${ico("mais")} Por CNPJ</button>
       <button class="btn ico-btn" id="funil-exp" title="Exportar funil (CSV)" aria-label="Exportar funil">${ico("baixar")}</button>
     </div>
@@ -1236,88 +1382,98 @@ async function telaFunil(main) {
     desenharQuadro();
   };
   $("#funil-cnpj").onclick = adicionarPorCNPJ;
-  $("#funil-exp").onclick = () => {
-    const et = (id) => E.resumo.etapas.find((e) => e.id === id)?.nome || "";
-    if (!E.funil.negocios.length) return aviso("O funil está vazio", true);
-    exportarCSV(
-      E.funil.negocios.map((n) => ({ ...n.empresa, cnpj: digitos(n.empresa.cnpj), _neg: n })),
-      "funil",
-      {
-        cabecalho: ["Etapa", "Valor", "Próximo contato", "Origem", "Motivo da perda", "Entrou no funil"],
-        valores: ({ _neg: n }) => [et(n.etapa_id), n.valor ?? "", fmtData(n.proximo_contato), n.origem || "", n.motivo_perda || "", fmtData(n.criado_em)],
-      }
-    );
-  };
+  $("#funil-contato").onclick = adicionarContato;
+  $("#funil-exp").onclick = exportarFunil;
   await carregarResumo();
-  await carregarFunil();
+  await carregarFunil(true);
 }
 
-async function carregarFunil() {
+// completo: lê tudo; senão, só o que mudou desde a última leitura (economiza leituras do banco)
+async function carregarFunil(completo = true) {
   try {
-    E.funil.negocios = await api("data/negocios");
+    if (completo || !E.funil.ultima) {
+      E.funil.negocios = await api("data/negocios");
+    } else {
+      const novos = await api(`data/negocios?desde=${encodeURIComponent(E.funil.ultima)}`, { silencioso: true });
+      const porId = new Map(E.funil.negocios.map((n) => [n.id, n]));
+      for (const n of novos) porId.set(n.id, n);
+      E.funil.negocios = [...porId.values()].sort((a, b) => String(b.atualizado_em).localeCompare(String(a.atualizado_em)));
+    }
+    E.funil.ultima = E.funil.negocios.reduce((m, n) => (String(n.atualizado_em) > m ? String(n.atualizado_em) : m), "");
   } catch (e) {
-    aviso(e.message, true);
-    E.funil.negocios = [];
+    if (completo) {
+      aviso(e.message, true);
+      E.funil.negocios = [];
+    }
   }
-  desenharQuadro();
+  if (!arrastando) desenharQuadro();
 }
 
 function desenharQuadro() {
   const q = $("#quadro");
   if (!q) return;
+  const rolagem = q.scrollLeft;
+  const rolColunas = Object.fromEntries($$(".coluna", q).map((c) => [c.dataset.etapa, $(".coluna-cards", c)?.scrollTop || 0]));
   const filtro = norm(E.funil.filtro);
+  const fd = digitos(E.funil.filtro);
   const negs = E.funil.negocios.filter(
-    (n) => !filtro || norm(`${n.empresa.razao_social} ${n.empresa.nome_fantasia} ${n.empresa.municipio}`).includes(filtro)
+    (n) =>
+      !filtro ||
+      norm(`${nomeNeg(n)} ${n.empresa?.razao_social || ""} ${n.empresa?.municipio || ""} ${n.contato_nome || ""} ${n.wa_nome || ""}`).includes(filtro) ||
+      (fd.length >= 4 && digitos(`${n.telefone} ${n.wa_numero}`).includes(fd))
   );
   const hoje = hojeISO();
   if (!E.funil.negocios.length) {
     q.innerHTML = `<div class="vazio" style="margin:auto">${ico("funil")}<h3>Funil vazio</h3>
-      <p>Envie empresas para cá a partir da busca, de uma lista ou da ficha da empresa — ou adicione direto pelo CNPJ.</p></div>`;
+      <p>Envie empresas para cá a partir da busca, de uma lista ou da ficha da empresa — ou adicione pelo CNPJ ou como contato. Contatos do formulário do site também aparecem aqui.</p></div>`;
     return;
   }
+  const card = (n, et) => {
+    const pc = n.proximo_contato;
+    const pcClasse = pc ? (pc < hoje ? "perigo" : pc === hoje ? "aviso" : "") : "";
+    const icone = n.empresa ? "" : `<span class="tipo-c" title="${n.fonte === "site" ? "Contato do site" : "Contato sem CNPJ"}">${ico(n.fonte === "site" ? "site" : "pessoa")}</span>`;
+    return `<article class="card-n ${n.nao_lidas > 0 ? "novas" : ""}" data-id="${n.id}">
+      <span class="alca" title="Arrastar">${ico("alca")}</span>
+      <div style="min-width:0">
+        <div class="nome">${icone}${esc(nomeNeg(n))}</div>
+        <div class="sub">${esc(subNeg(n))}</div>
+        <div class="meta">
+          ${selosAuto(n, et)}
+          ${pc ? `<span class="selo ${pcClasse}">${pc < hoje ? "Atrasado · " : pc === hoje ? "Hoje · " : ""}${fmtData(pc).slice(0, 5)}</span>` : ""}
+          ${n.valor ? `<span class="selo num">${fmtMoedaCurta(n.valor)}</span>` : ""}
+          ${n.total_atividades ? `<span class="selo num" title="Registros de contato">${ico("nota")}${n.total_atividades}</span>` : ""}
+        </div>
+        ${n.ultima_atividade ? `<div class="ultima">${esc(n.ultima_atividade)}</div>` : ""}
+      </div>
+    </article>`;
+  };
   q.innerHTML = E.resumo.etapas
     .map((et) => {
-      const cards = negs.filter((n) => n.etapa_id === et.id);
+      const cards = negs.filter((n) => n.etapa_id === et.id).sort((a, b) => (b.nao_lidas > 0) - (a.nao_lidas > 0));
       const soma = cards.reduce((s, n) => s + (Number(n.valor) || 0), 0);
+      const prontos = et.papel === "entrada" ? cards.filter((n) => n.automacao === "inativa" && n.wa_status === "tem" && !n.optout).length : 0;
       return `<section class="coluna" data-etapa="${et.id}">
         <div class="coluna-topo">
           <div class="t"><span class="bola" style="background:${esc(et.cor)}"></span>${esc(et.nome)}<span class="q num">${cards.length}</span></div>
           ${soma ? `<div class="soma num">${fmtMoedaCurta(soma)}</div>` : ""}
+          ${prontos ? `<a class="btn peq prim aprovar-col" href="#/aprovar">${ico("aprovar")} Aprovar ${prontos}</a>` : ""}
         </div>
-        <div class="coluna-cards">${
-          cards.length
-            ? cards
-                .map((n) => {
-                  const r = n.empresa;
-                  const pc = n.proximo_contato;
-                  const pcClasse = pc ? (pc < hoje ? "perigo" : pc === hoje ? "aviso" : "") : "";
-                  return `<article class="card-n" data-id="${n.id}">
-                    <span class="alca" title="Arrastar">${ico("alca")}</span>
-                    <div style="min-width:0">
-                      <div class="nome">${esc(nomeDe(r))}</div>
-                      <div class="sub">${esc(titulo(r.municipio))} - ${esc(r.uf)}</div>
-                      <div class="meta">
-                        ${pc ? `<span class="selo ${pcClasse}">${pc < hoje ? "Atrasado · " : pc === hoje ? "Hoje · " : ""}${fmtData(pc).slice(0, 5)}</span>` : ""}
-                        ${n.valor ? `<span class="selo num">${fmtMoedaCurta(n.valor)}</span>` : ""}
-                        ${n.total_atividades ? `<span class="selo num" title="Registros de contato">${ico("nota")}${n.total_atividades}</span>` : ""}
-                      </div>
-                      ${n.ultima_atividade ? `<div class="ultima">${esc(n.ultima_atividade)}</div>` : ""}
-                    </div>
-                  </article>`;
-                })
-                .join("")
-            : `<div class="coluna-vazia">Arraste empresas para cá</div>`
-        }</div>
+        <div class="coluna-cards">${cards.length ? cards.map((n) => card(n, et)).join("") : `<div class="coluna-vazia">Arraste para cá</div>`}</div>
       </section>`;
     })
     .join("");
+  q.scrollLeft = rolagem;
+  $$(".coluna", q).forEach((c) => {
+    const cc = $(".coluna-cards", c);
+    if (cc && rolColunas[c.dataset.etapa]) cc.scrollTop = rolColunas[c.dataset.etapa];
+  });
 
   q.onclick = (ev) => {
-    if (ev.target.closest(".alca")) return;
+    if (ev.target.closest(".alca") || ev.target.closest(".aprovar-col")) return;
     const c = ev.target.closest(".card-n");
     if (!c) return;
     const n = E.funil.negocios.find((x) => x.id === Number(c.dataset.id));
-    if (n) abrirEmpresa({ ...n.empresa, cnpj: digitos(n.empresa.cnpj) });
+    if (n) abrirNegocio(n);
   };
   ligarArraste(q);
 }
@@ -1331,6 +1487,7 @@ function ligarArraste(quadro) {
     const neg = E.funil.negocios.find((n) => n.id === id);
     if (!neg) return;
     ev.preventDefault();
+    arrastando = true;
     const r = card.getBoundingClientRect();
     const dx = ev.clientX - r.left;
     const dy = ev.clientY - r.top;
@@ -1364,6 +1521,7 @@ function ligarArraste(quadro) {
       fantasma.remove();
       card.classList.remove("arrastando");
       alvo?.classList.remove("alvo");
+      arrastando = false;
       const novaEtapa = alvo ? Number(alvo.dataset.etapa) : null;
       if (novaEtapa && novaEtapa !== neg.etapa_id) await moverNegocio(neg, novaEtapa);
     };
@@ -1386,8 +1544,12 @@ async function moverNegocio(neg, etapaId) {
   desenharQuadro();
   try {
     await api(`data/negocios/${neg.id}`, { method: "PATCH", body: { etapa_id: etapaId, ...(motivo ? { motivo_perda: motivo } : {}) } });
-    await Promise.all([carregarResumo(), carregarFunil()]);
+    await carregarFunil(true);
+    checarNovidades(true);
+    const atual = E.funil.negocios.find((n) => n.id === neg.id);
     if (etapa?.tipo === "ganho") aviso("Venda marcada como ganha 🎉");
+    else if (atual?.automacao === "ativa" && atual.passo === "enviar_retomada") aviso(`Retomada automática em ${fmtData(atual.proxima_acao_em.slice(0, 10))}`);
+    else if (etapa?.papel === "entrada" && atual?.automacao === "inativa") aviso("De volta à fila de aprovação");
   } catch (e) {
     neg.etapa_id = anterior;
     desenharQuadro();
@@ -1427,28 +1589,170 @@ async function adicionarPorCNPJ() {
   }
 }
 
-// ============================================================ GAVETA (ficha da empresa)
-async function abrirEmpresa(registro) {
-  E.gaveta = { r: registro, info: null, atividades: null };
+// Contato sem CNPJ: indicação, evento, pessoa física.
+async function adicionarContato() {
+  if (!E.resumo.etapas.length) await carregarResumo();
+  const abertas = E.resumo.etapas.filter((e) => e.tipo === "aberta");
+  const padrao = abertas.find((e) => e.papel === "conversa") || abertas[0];
+  const entrada = E.resumo.etapas.find((e) => e.papel === "entrada");
+  const r = await abrirModal({
+    titulo: "Novo contato",
+    texto: "Para quem não aparece na busca por CNPJ: indicação, contato de evento, pessoa física.",
+    corpo: `
+      <div class="campo"><label for="m-nome">Nome</label><input id="m-nome" class="entrada" maxlength="120" autocomplete="off"></div>
+      <div class="campo"><label for="m-tel">WhatsApp com DDD</label><input id="m-tel" class="entrada num" inputmode="tel" placeholder="(15) 99999-9999" autocomplete="off"></div>
+      <div class="campo"><label for="m-email">E-mail (opcional)</label><input id="m-email" class="entrada" type="email" autocomplete="off"></div>
+      <div class="campo"><label for="m-int">Interesse ou observação (opcional)</label><textarea id="m-int" class="entrada" rows="2"></textarea></div>
+      <div class="grade-2">
+        <div class="campo"><label for="m-orig">Origem</label><input id="m-orig" class="entrada" value="Indicação" maxlength="80"></div>
+        <div class="campo"><label for="m-et">Etapa</label><select id="m-et" class="entrada">${abertas
+          .map((e) => `<option value="${e.id}" ${e.id === padrao?.id ? "selected" : ""}>${esc(e.nome)}</option>`)
+          .join("")}</select></div>
+      </div>
+      ${entrada ? `<p class="dica">Na etapa “${esc(entrada.nome)}”, o contato entra na fila de aprovação do primeiro contato automático.</p>` : ""}`,
+    botoes: [
+      { rotulo: "Cancelar", valor: null },
+      {
+        rotulo: "Salvar",
+        classe: "prim",
+        acao: (m) => {
+          const nome = $("#m-nome", m).value.trim();
+          const tel = digitos($("#m-tel", m).value);
+          if (nome.length < 2 || tel.length < 10 || tel.length > 13) {
+            aviso("Informe nome e WhatsApp com DDD", true);
+            return false;
+          }
+          return {
+            nome,
+            telefone: tel,
+            email: $("#m-email", m).value.trim(),
+            interesse: $("#m-int", m).value.trim(),
+            origem: $("#m-orig", m).value.trim() || "Contato manual",
+            etapa_id: Number($("#m-et", m).value),
+          };
+        },
+      },
+    ],
+  });
+  if (!r) return;
+  try {
+    const res = await api("data/contatos", { method: "POST", body: r });
+    aviso("Contato criado");
+    if (E.ctx === "funil") await carregarFunil(true);
+    checarNovidades(true);
+    abrirContato(res.id);
+  } catch (e) {
+    aviso(e.message, true);
+  }
+}
+
+function exportarFunil() {
+  const negs = E.funil.negocios;
+  if (!negs.length) return aviso("O funil está vazio", true);
+  const et = (id) => E.resumo.etapas.find((e) => e.id === id)?.nome || "";
+  const AUTO = { inativa: "", ativa: "Automação ativa", respondeu: "Respondeu", assumida: "Com você", pausada: "Pausada", encerrada: "Encerrada" };
+  const FONTE = { prospeccao: "Busca", site: "Site", manual: "Manual" };
+  const cab = [
+    "Nome", "Razão social", "CNPJ", "Contato", "Telefone", "WhatsApp", "E-mail", "Cidade", "UF", "Segmento", "Etapa", "Valor",
+    "Próximo contato", "Origem", "Fonte", "Automação", "Próxima mensagem", "Motivo da perda", "Entrou no funil",
+  ];
+  const linhas = negs.map((n) => {
+    const r = n.empresa || {};
+    const p = passoLimpo(n.passo);
+    return [
+      nomeNeg(n), titulo(r.razao_social || ""), r.cnpj ? fmtCNPJ(r.cnpj) : "", n.contato_nome || "", fmtTel(n.telefone),
+      n.wa_status === "tem" ? fmtTel(n.wa_numero) : n.wa_status === "nao_tem" ? "não tem" : "", n.email || emailDe(r),
+      titulo(r.municipio || ""), r.uf || "", r.cnae_fiscal_descricao || "", et(n.etapa_id), n.valor ?? "", fmtData(n.proximo_contato),
+      n.origem || "", FONTE[n.fonte] || n.fonte || "", AUTO[n.automacao] || "",
+      n.automacao === "ativa" && n.proxima_acao_em ? `${ROTULO_PASSO[p] || ""} ${dataHora(n.proxima_acao_em)}` : "",
+      n.motivo_perda || "", fmtData(n.criado_em),
+    ];
+  });
+  baixarCSV([cab, ...linhas], "funil");
+  aviso(`${plural(negs.length, "negócio exportado", "negócios exportados")}`);
+}
+
+// ============================================================ GAVETA (ficha da empresa ou do contato)
+function abrirPainelGaveta() {
   $("#gaveta-fundo").hidden = false;
   const g = $("#gaveta");
   g.classList.add("aberta");
   g.setAttribute("aria-hidden", "false");
+}
+
+async function abrirEmpresa(registro) {
+  E.gaveta = { tipo: "empresa", r: registro, negId: null, info: null, atividades: null, conversa: null };
+  abrirPainelGaveta();
   desenharGaveta();
   await carregarInfoGaveta();
+}
+
+async function abrirContato(negId) {
+  E.gaveta = { tipo: "contato", r: null, negId, info: null, atividades: null, conversa: null };
+  abrirPainelGaveta();
+  desenharGaveta();
+  await carregarInfoGaveta();
+}
+
+const abrirNegocio = (n) => (n.empresa ? abrirEmpresa({ ...n.empresa, cnpj: digitos(n.empresa.cnpj) }) : abrirContato(n.id));
+
+async function abrirNegocioPorId(id) {
+  try {
+    const d = await api(`data/negocios/${id}`);
+    if (d.empresa) abrirEmpresa({ ...d.empresa, cnpj: digitos(d.empresa.cnpj) });
+    else abrirContato(id);
+  } catch (e) {
+    aviso(e.message, true);
+  }
 }
 
 async function carregarInfoGaveta() {
   const G = E.gaveta;
   if (!G) return;
   try {
-    G.info = await api(`data/empresas/${G.r.cnpj}`);
-    if (G.info.negocio) G.atividades = await api(`data/negocios/${G.info.negocio.id}/atividades`);
-    else G.atividades = null;
+    if (G.tipo === "contato") {
+      const d = await api(`data/negocios/${G.negId}`);
+      G.info = { negocio: d.negocio, listas: [] };
+    } else {
+      G.info = await api(`data/empresas/${G.r.cnpj}`);
+      // o quadro do funil traz só parte dos dados: a ficha usa o registro completo salvo
+      if (G.info.empresa) G.r = { ...G.r, ...G.info.empresa, cnpj: G.r.cnpj };
+    }
+    const neg = G.info.negocio;
+    G.negId = neg?.id || null;
+    if (neg) {
+      const [ativs, conv] = await Promise.all([
+        api(`data/negocios/${neg.id}/atividades`),
+        api(`automacao/mensagens/${neg.id}`).catch(() => ({ mensagens: [], modelos: [] })),
+      ]);
+      G.atividades = ativs;
+      G.conversa = conv;
+    } else {
+      G.atividades = null;
+      G.conversa = null;
+    }
   } catch (e) {
     aviso(e.message, true);
   }
-  if (E.gaveta === G) desenharGaveta();
+  if (E.gaveta !== G) return;
+  desenharGaveta();
+  const neg = G.info?.negocio;
+  if (neg?.nao_lidas > 0) marcarLidas(neg);
+}
+// chamada pelas novidades (resposta nova, envio): recarrega se a ficha continua aberta
+const recarregarGaveta = () => carregarInfoGaveta();
+
+async function marcarLidas(neg) {
+  try {
+    await api("automacao/acao", { method: "POST", body: { negocio_id: neg.id, acao: "lidas" } });
+    neg.nao_lidas = 0;
+    const n = E.funil.negocios.find((x) => x.id === neg.id);
+    if (n) {
+      n.nao_lidas = 0;
+      if (E.ctx === "funil" && !arrastando) desenharQuadro();
+    }
+    checarNovidades(true);
+  } catch {}
 }
 
 function fecharGaveta() {
@@ -1462,13 +1766,43 @@ $("#gaveta-fundo").onclick = fecharGaveta;
 
 const ROTULO_TIPO = { nota: "Nota", ligacao: "Ligação", whatsapp: "WhatsApp", email: "E-mail", reuniao: "Reunião", sistema: "" };
 const ICONE_TIPO = { nota: "nota", ligacao: "telefone", whatsapp: "whats", email: "email", reuniao: "reuniao", sistema: "sistema" };
+const CAMPOS_DIGITANDO = ["n-texto", "w-texto", "w-outro", "ct-nome", "ct-tel", "ct-email", "ct-int"];
 
 function desenharGaveta() {
   const G = E.gaveta;
   if (!G) return;
-  const r = G.r;
   const g = $("#gaveta");
+  // a ficha é redesenhada quando chega mensagem: guarda o que está sendo digitado e a rolagem
+  const digitado = CAMPOS_DIGITANDO.map((id) => [id, $(`#${id}`, g)]).filter(([, el]) => el && el.dataset.mexeu === "1").map(([id, el]) => [id, el.value]);
+  const focado = document.activeElement && g.contains(document.activeElement) ? document.activeElement.id : null;
   const rolagem = $(".gaveta-corpo", g)?.scrollTop || 0;
+  g.innerHTML = G.tipo === "contato" ? htmlGavetaContato(G) : htmlGavetaEmpresa(G);
+  for (const [id, valor] of digitado) {
+    const el = $(`#${id}`, g);
+    if (el) {
+      el.value = valor;
+      el.dataset.mexeu = "1";
+    }
+  }
+  g.oninput = (ev) => ev.target.id && CAMPOS_DIGITANDO.includes(ev.target.id) && (ev.target.dataset.mexeu = "1");
+  if (focado && $(`#${focado}`, g)) $(`#${focado}`, g).focus({ preventScroll: true });
+  const corpo = $(".gaveta-corpo", g);
+  if (corpo) corpo.scrollTop = rolagem;
+  const conv = $(".conversa", g);
+  if (conv) conv.scrollTop = conv.scrollHeight;
+  $("#g-fechar").onclick = fecharGaveta;
+  if (G.tipo === "contato") ligarGavetaContato(G);
+  else ligarGavetaEmpresa(G);
+  const neg = G.info?.negocio;
+  if (neg) {
+    ligarNegocio(neg);
+    ligarWhatsApp(neg, G);
+  }
+}
+
+// ---------- ficha da empresa (Receita)
+function htmlGavetaEmpresa(G) {
+  const r = G.r;
   const p = porteDe(r);
   const tels = telefonesDe(r);
   const email = emailDe(r);
@@ -1478,11 +1812,11 @@ function desenharGaveta() {
   const neg = G.info?.negocio;
   const listasDaEmpresa = (G.info?.listas || []).map((id) => E.resumo.listas.find((l) => l.id === id)).filter(Boolean);
   const etapa = neg && E.resumo.etapas.find((e) => e.id === neg.etapa_id);
-
-  g.innerHTML = `
+  const whatsLink = neg?.wa_numero ? `https://wa.me/${digitos(neg.wa_numero)}` : tels[0] ? `https://wa.me/55${tels[0].whats}` : "#";
+  return `
     <div class="gaveta-topo">
       <div class="linha-1">
-        <h2>${esc(nomeDe(r))}</h2>
+        <h2>${esc(nomeEmpresa(r, neg?.wa_nome))}</h2>
         <button class="btn fant ico-btn" id="g-fechar" aria-label="Fechar">${ico("fechar")}</button>
       </div>
       <div class="razao">${esc(titulo(r.razao_social))}</div>
@@ -1495,7 +1829,7 @@ function desenharGaveta() {
       </div>
       <div class="contatos">
         <a class="contato" id="c-tel" href="${tels[0] ? `tel:+55${tels[0].digitos}` : "#"}" aria-disabled="${!tels.length}">${ico("telefone")}Ligar</a>
-        <a class="contato whats" id="c-whats" href="${tels[0] ? `https://wa.me/55${tels[0].digitos}` : "#"}" target="_blank" rel="noopener" aria-disabled="${!tels.length}">${ico("whats")}WhatsApp</a>
+        <a class="contato whats" id="c-whats" href="${whatsLink}" target="_blank" rel="noopener" aria-disabled="${whatsLink === "#"}">${ico("whats")}WhatsApp</a>
         <a class="contato" id="c-mapa" href="${linkMapsEndereco(r)}" target="_blank" rel="noopener" aria-disabled="${!end.l1}">${ico("mapa")}Localização</a>
         <a class="contato" id="c-mail" href="${email ? `mailto:${email}` : "#"}" aria-disabled="${!email}">${ico("email")}E-mail</a>
       </div>
@@ -1509,7 +1843,7 @@ function desenharGaveta() {
         <button class="btn peq ico-btn" id="g-mais" title="Mais" aria-label="Mais opções">⋯</button>
       </div>
 
-      ${neg ? htmlNegocio(neg, etapa, G.atividades) : ""}
+      ${neg ? htmlWhatsApp(neg, G) + htmlNegocio(neg, etapa, G.atividades) : ""}
 
       <section class="secao"><h3>Dados gerais</h3><div class="conteudo-s"><dl class="dl">
         <dt>CNPJ</dt><dd class="num">${fmtCNPJ(r.cnpj)}</dd>
@@ -1529,7 +1863,7 @@ function desenharGaveta() {
         <dt>E-mail</dt><dd>${email ? `<a href="mailto:${esc(email)}">${esc(email)}</a>` : '<span class="muted">Não informado</span>'}</dd>
         <dt>Endereço</dt><dd>${esc(end.l1 || "—")}<br><span class="muted">${esc(end.l2)}${end.cep ? ` · ${end.cep}` : ""}</span></dd>
       </dl>
-      <p class="dica" style="margin-top:10px">Telefone e e-mail são os declarados à Receita e podem estar desatualizados. “Ver no Maps” mostra o perfil público da empresa.</p>
+      <p class="dica" style="margin-top:10px">Telefone e e-mail são os declarados à Receita e podem estar desatualizados (às vezes são do contador). “Ver no Maps” mostra o perfil público da empresa.</p>
       </div></section>
 
       <section class="secao"><h3>Atividade</h3><div class="conteudo-s">
@@ -1558,21 +1892,24 @@ function desenharGaveta() {
 
       <p class="dica">Fonte: base pública de CNPJs da Receita Federal (Minha Receita).</p>
     </div>`;
+}
 
-  $(".gaveta-corpo", g).scrollTop = rolagem;
-  $("#g-fechar").onclick = fecharGaveta;
-
+function ligarGavetaEmpresa(G) {
+  const r = G.r;
+  const neg = G.info?.negocio;
+  const tels = telefonesDe(r);
+  const email = emailDe(r);
   // contatos com escolha de número/modelo
-  const modelos = E.resumo.modelos || [];
+  const modelos = (E.resumo.modelos || []).filter((m) => !m.passo);
   $("#c-whats").onclick = (ev) => {
-    if (!tels.length) return;
+    if (neg?.wa_numero || !tels.length) return;
     if (tels.length < 2 && !modelos.length) return;
     ev.preventDefault();
     const itens = [];
     for (const t of tels) {
-      itens.push(`<a data-v="x" href="https://wa.me/55${t.digitos}" target="_blank" rel="noopener">${t.exib}${t.celular ? "" : " <small>fixo — pode não ter WhatsApp</small>"}</a>`);
+      itens.push(`<a data-v="x" href="https://wa.me/55${t.whats}" target="_blank" rel="noopener">${t.exib}${t.celular ? "" : " <small>fixo — pode não ter WhatsApp</small>"}</a>`);
       for (const m of modelos) {
-        itens.push(`<a data-v="x" href="https://wa.me/55${t.digitos}?text=${encodeURIComponent(preencherModelo(m.texto, r))}" target="_blank" rel="noopener">&nbsp;&nbsp;↳ ${esc(m.titulo)}<small>${esc(preencherModelo(m.texto, r))}</small></a>`);
+        itens.push(`<a data-v="x" href="https://wa.me/55${t.whats}?text=${encodeURIComponent(preencherModelo(m.texto, r))}" target="_blank" rel="noopener">&nbsp;&nbsp;↳ ${esc(m.titulo)}<small>${esc(preencherModelo(m.texto, r))}</small></a>`);
       }
       if (tels.length > 1) itens.push('<div class="sep"></div>');
     }
@@ -1589,9 +1926,7 @@ function desenharGaveta() {
     abrirMenu(
       ev.currentTarget,
       `<a data-v="x" href="mailto:${esc(email)}">E-mail em branco</a>` +
-        modelos
-          .map((m) => `<a data-v="x" href="mailto:${esc(email)}?body=${encodeURIComponent(preencherModelo(m.texto, r))}">${esc(m.titulo)}</a>`)
-          .join("")
+        modelos.map((m) => `<a data-v="x" href="mailto:${esc(email)}?body=${encodeURIComponent(preencherModelo(m.texto, r))}">${esc(m.titulo)}</a>`).join("")
     );
   };
 
@@ -1612,19 +1947,152 @@ function desenharGaveta() {
         if (v === "exportar") return exportarCSV([r], `empresa-${r.cnpj}`);
         if (v === "atualizar") return atualizarDaReceita();
         if (v === "sair-funil") {
-          if (!(await confirmar("Tirar do funil", "As anotações deste negócio serão apagadas.", "Tirar", true))) return;
+          if (!(await confirmar("Tirar do funil", "As anotações e a conversa registradas neste negócio serão apagadas.", "Tirar", true))) return;
           await api(`data/negocios/${neg.id}`, { method: "DELETE" });
           await carregarResumo();
-          if (E.ctx === "funil") await carregarFunil();
+          if (E.ctx === "funil") await carregarFunil(true);
+          if (E.ctx === "aprovar") recarregarAprovar();
           await carregarInfoGaveta();
           redesenharAtual();
         }
       }
     );
-
-  if (neg) ligarNegocio(neg);
 }
 
+// ---------- ficha do contato (site ou manual, sem CNPJ)
+function htmlGavetaContato(G) {
+  const neg = G.info?.negocio;
+  if (!neg)
+    return `<div class="gaveta-topo"><div class="linha-1"><h2>Carregando…</h2><button class="btn fant ico-btn" id="g-fechar" aria-label="Fechar">${ico("fechar")}</button></div></div>
+      <div class="gaveta-corpo"><div class="carregando"><span class="giro"></span></div></div>`;
+  const etapa = E.resumo.etapas.find((e) => e.id === neg.etapa_id);
+  const t = neg.tracking || {};
+  const tel = digitos(neg.wa_numero || neg.telefone);
+  const email = neg.email || "";
+  const local = [t.city, t.region].filter(Boolean).join(" - ");
+  return `
+    <div class="gaveta-topo">
+      <div class="linha-1"><h2>${esc(neg.contato_nome || "Contato")}</h2><button class="btn fant ico-btn" id="g-fechar" aria-label="Fechar">${ico("fechar")}</button></div>
+      <div class="razao">${neg.fonte === "site" ? "Contato do site" : "Contato sem CNPJ"}${neg.origem ? ` · ${esc(neg.origem)}` : ""}</div>
+      <div class="selos">
+        ${neg.fonte === "site" ? `<span class="selo acento">${ico("site")}Site</span>` : `<span class="selo">${ico("pessoa")}Manual</span>`}
+        ${local ? `<span class="selo">${ico("mapa")}${esc(local)}</span>` : ""}
+        <span class="selo num">desde ${fmtData(neg.criado_em)}</span>
+      </div>
+      <div class="contatos tres">
+        <a class="contato" href="${tel ? `tel:+${tel}` : "#"}" aria-disabled="${!tel}">${ico("telefone")}Ligar</a>
+        <a class="contato whats" href="${tel ? `https://wa.me/${tel}` : "#"}" target="_blank" rel="noopener" aria-disabled="${!tel}">${ico("whats")}WhatsApp</a>
+        <a class="contato" href="${email ? `mailto:${esc(email)}` : "#"}" aria-disabled="${!email}">${ico("email")}E-mail</a>
+      </div>
+    </div>
+    <div class="gaveta-corpo">
+      <div class="acoes-ficha">
+        <button class="btn peq" id="g-copiar">${ico("copiar")} Copiar dados</button>
+        <button class="btn peq ico-btn" id="g-mais" title="Mais" aria-label="Mais opções">⋯</button>
+      </div>
+      ${htmlWhatsApp(neg, G)}
+      ${htmlNegocio(neg, etapa, G.atividades)}
+      <section class="secao"><h3>Contato</h3><div class="conteudo-s">
+        <div class="grade-2">
+          <div class="campo"><label for="ct-nome">Nome</label><input id="ct-nome" class="entrada" value="${esc(neg.contato_nome || "")}" maxlength="120"></div>
+          <div class="campo"><label for="ct-tel">WhatsApp</label><input id="ct-tel" class="entrada num" inputmode="tel" value="${esc(fmtTel(neg.telefone))}"></div>
+        </div>
+        <div class="campo" style="margin-top:10px"><label for="ct-email">E-mail</label><input id="ct-email" class="entrada" type="email" value="${esc(email)}"></div>
+        <div class="campo" style="margin-top:10px"><label for="ct-int">Interesse / observação</label><textarea id="ct-int" class="entrada" rows="2">${esc(neg.interesse || "")}</textarea></div>
+      </div></section>
+      ${htmlRastreamento(t, neg)}
+    </div>`;
+}
+
+function ligarGavetaContato(G) {
+  const neg = G.info?.negocio;
+  if (!neg) return;
+  const salvar = async (body, depois) => {
+    try {
+      await api(`data/negocios/${neg.id}`, { method: "PATCH", body });
+      if (depois) await depois();
+      await carregarInfoGaveta();
+      if (E.ctx === "funil") carregarFunil(true);
+    } catch (e) {
+      aviso(e.message, true);
+    }
+  };
+  $("#ct-nome").onchange = (ev) => ev.target.value.trim().length >= 2 && salvar({ contato_nome: ev.target.value.trim() });
+  $("#ct-tel").onchange = (ev) => {
+    const d = digitos(ev.target.value);
+    if (d.length < 10 || d.length > 13) return aviso("Informe o número com DDD", true);
+    salvar({ telefone: d }, () => api("automacao/acao", { method: "POST", body: { negocio_id: neg.id, acao: "verificar" } }).catch(() => {}));
+  };
+  $("#ct-email").onchange = (ev) => salvar({ email: ev.target.value.trim() });
+  $("#ct-int").onchange = (ev) => salvar({ interesse: ev.target.value });
+  $("#g-copiar").onclick = () =>
+    copiar(
+      [neg.contato_nome, neg.telefone && `WhatsApp: ${fmtTel(neg.telefone)}`, neg.email && `E-mail: ${neg.email}`, neg.interesse && `Interesse: ${neg.interesse}`, neg.origem && `Origem: ${neg.origem}`]
+        .filter(Boolean)
+        .join("\n"),
+      "Dados copiados"
+    );
+  $("#g-mais").onclick = (ev) =>
+    abrirMenu(ev.currentTarget, `<button data-v="apagar" style="color:var(--danger)">Apagar contato</button>`, async (v) => {
+      if (v !== "apagar") return;
+      if (!(await confirmar("Apagar contato", "O contato, as anotações e a conversa registrada aqui serão apagados (pedido de exclusão de dados, LGPD).", "Apagar", true))) return;
+      try {
+        await api(`data/negocios/${neg.id}`, { method: "DELETE" });
+        fecharGaveta();
+        if (E.ctx === "funil") await carregarFunil(true);
+        if (E.ctx === "aprovar") recarregarAprovar();
+        checarNovidades(true);
+        aviso("Contato apagado");
+      } catch (e) {
+        aviso(e.message, true);
+      }
+    });
+}
+
+const hostDe = (u) => {
+  try {
+    return new URL(u).hostname.replace(/^www\./, "");
+  } catch {
+    return String(u || "");
+  }
+};
+const caminhoDe = (u) => {
+  try {
+    const x = new URL(u);
+    return x.pathname + (x.search.length > 1 ? "?…" : "");
+  } catch {
+    return String(u || "");
+  }
+};
+
+function htmlRastreamento(t, neg) {
+  if (!t || !(t.first || t.last || t.page)) return "";
+  const toque = (x) => {
+    if (!x) return "—";
+    const fonte = x.utm_source
+      ? `${x.utm_source}${x.utm_medium ? ` / ${x.utm_medium}` : ""}`
+      : x.gclid || x.gbraid || x.wbraid
+        ? "Google Ads"
+        : x.fbclid
+          ? "Meta (anúncio ou link)"
+          : x.referrer
+            ? hostDe(x.referrer)
+            : "Direto";
+    return `${esc(fonte)}${x.utm_campaign ? ` · campanha ${esc(x.utm_campaign)}` : ""}${x.landing ? ` · entrou por ${esc(caminhoDe(x.landing))}` : ""}${x.at ? ` <span class="muted">(${fmtData(x.at)})</span>` : ""}`;
+  };
+  const paginas = (t.pages || []).slice(-8).map((p) => esc(p[0])).join(" → ");
+  const mesmo = JSON.stringify(t.last || {}) === JSON.stringify(t.first || {});
+  return `<section class="secao"><h3>Origem do contato</h3><div class="conteudo-s"><dl class="dl">
+    <dt>Origem</dt><dd>${esc(neg.origem || "—")}</dd>
+    <dt>Primeira visita</dt><dd>${toque(t.first)}</dd>
+    ${t.last && !mesmo ? `<dt>Última visita</dt><dd>${toque(t.last)}</dd>` : ""}
+    <dt>Visitas</dt><dd class="num">${esc(t.visits || 1)}</dd>
+    ${paginas ? `<dt>Páginas vistas</dt><dd class="peq">${paginas}</dd>` : ""}
+    ${t.page ? `<dt>Formulário enviado em</dt><dd class="peq">${esc(caminhoDe(t.page))}</dd>` : ""}
+  </dl><p class="dica" style="margin-top:10px">Vem do formulário do site (anúncio, campanha e páginas). Serve para medir de onde vêm as vendas.</p></div></section>`;
+}
+
+// ---------- bloco "No funil" (etapa, valor, próximo contato, anotações)
 function htmlNegocio(neg, etapa, atividades) {
   return `
     <section class="secao negocio"><h3>No funil <span class="selo"><span class="bola" style="background:${esc(etapa?.cor || "#888")}"></span>${esc(etapa?.nome || "")}</span></h3>
@@ -1676,8 +2144,8 @@ function ligarNegocio(neg) {
   const salvarCampo = async (body) => {
     try {
       await api(`data/negocios/${neg.id}`, { method: "PATCH", body });
-      await carregarResumo();
-      if (E.ctx === "funil") await carregarFunil();
+      if (body.etapa_id) checarNovidades(true);
+      if (E.ctx === "funil") await carregarFunil(true);
       await carregarInfoGaveta();
       if (E.ctx !== "funil") redesenharAtual();
     } catch (e) {
@@ -1710,7 +2178,9 @@ function ligarNegocio(neg) {
     if (!texto) return $("#n-texto").focus();
     try {
       await api(`data/negocios/${neg.id}/atividades`, { method: "POST", body: { tipo: $("#n-tipo").value, texto } });
-      if (E.ctx === "funil") await carregarFunil();
+      $("#n-texto").value = "";
+      $("#n-texto").dataset.mexeu = "";
+      if (E.ctx === "funil") await carregarFunil(true);
       await carregarInfoGaveta();
       aviso("Registrado");
     } catch (e) {
@@ -1722,15 +2192,250 @@ function ligarNegocio(neg) {
       (b.onclick = async () => {
         if (!(await confirmar("Apagar registro", "Apagar esta anotação?", "Apagar", true))) return;
         await api(`data/atividades/${b.dataset.ativ}`, { method: "DELETE" });
-        if (E.ctx === "funil") await carregarFunil();
+        if (E.ctx === "funil") await carregarFunil(true);
         await carregarInfoGaveta();
       })
   );
 }
 
+// ---------- bloco "WhatsApp": automação, número, conversa e envio
+function estadoAutomacao(n, et, conv) {
+  const p = passoLimpo(n.passo);
+  const aberta = !et || et.tipo === "aberta";
+  const B = {
+    pausar: ["pausar", `${ico("pausa")}Pausar`],
+    retomar: ["retomar", `${ico("play")}Retomar`, "prim"],
+    assumir: ["assumir", `${ico("pessoa")}Assumir conversa`],
+    outro: ["outro_momento", "Outro momento"],
+    desq: ["desqualificar", "Desqualificar", "perigo"],
+    reabrir: ["reabrir", "Voltar para aprovação"],
+    continuar: ["continuar", `${ico("robo")}Era automática: continuar sequência`],
+  };
+  const so = (lista) => lista.filter((b) => aberta || !["desqualificar", "outro_momento"].includes(b[0]));
+  if (n.optout) return { selo: "Pediu para sair", classe: "perigo", texto: "Este contato pediu para não receber mensagens. Nenhuma mensagem automática será enviada.", botoes: [] };
+  switch (n.automacao) {
+    case "ativa":
+      if (p === "enviar_primeiro")
+        return { selo: "Aprovado", classe: "acento", texto: "Primeiro contato aprovado. Sai no próximo horário de envio, respeitando o intervalo e o limite do dia.", botoes: so([B.reabrir, B.assumir, B.desq]) };
+      if (p === "mover_outro_momento")
+        return { selo: "Automação ativa", classe: "acento", texto: `Tentativas enviadas. Sem resposta até <strong>${esc(quando(n.proxima_acao_em, false))}</strong>, vai para Outro momento.`, botoes: so([B.pausar, B.assumir, B.outro, B.desq]) };
+      if (p === "encerrar")
+        return { selo: "Automação ativa", classe: "acento", texto: `Retomada enviada. Sem resposta até <strong>${esc(quando(n.proxima_acao_em, false))}</strong>, o negócio é encerrado (perdido por falta de resposta).`, botoes: so([B.pausar, B.assumir, B.desq]) };
+      return {
+        selo: "Automação ativa",
+        classe: "acento",
+        texto: `Próxima mensagem automática: <strong>${esc(ROTULO_PASSO[p] || p)}</strong>, ${esc(quando(n.proxima_acao_em))} (ou no próximo horário de envio).`,
+        botoes: so([B.pausar, B.assumir, B.outro, B.desq]),
+      };
+    case "pausada":
+      return {
+        selo: "Pausada",
+        classe: "aviso",
+        texto: `Automação pausada${n.tentativas_erro >= 3 ? " depois de 3 erros de envio (veja o histórico)" : ""}.${p ? ` Ao retomar, a próxima é <strong>${esc(ROTULO_PASSO[p] || p)}</strong>.` : ""}`,
+        botoes: so([B.retomar, B.assumir, B.desq]),
+      };
+    case "respondeu": {
+      const teveAuto = (conv?.mensagens || []).some((m) => m.direcao === "saida" && m.origem === "automacao");
+      return {
+        selo: "Respondeu",
+        classe: "ok",
+        texto: `Respondeu: a automação parou e a conversa é com você.${teveAuto ? " Se a resposta foi uma mensagem automática da empresa, continue a sequência." : ""}`,
+        botoes: so([...(teveAuto ? [B.continuar] : []), B.outro, B.desq]),
+      };
+    }
+    case "assumida":
+      return { selo: "Com você", classe: "", texto: "Sem mensagens automáticas para este contato.", botoes: so([B.outro, B.desq, ...(aberta ? [B.reabrir] : [])]) };
+    case "encerrada":
+      return { selo: "Encerrada", classe: "", texto: "Automação encerrada para este contato.", botoes: [B.reabrir] };
+    default:
+      if (et?.papel === "entrada")
+        return {
+          selo: "Aguardando aprovação",
+          classe: "",
+          texto:
+            n.wa_status === "tem"
+              ? `Primeiro contato pronto para revisar em <a href="#/aprovar">Aprovar</a>.`
+              : n.wa_status
+                ? "Sem WhatsApp: não entra na fila de aprovação."
+                : "O sistema está conferindo se o número tem WhatsApp (faz isso sozinho, aos poucos).",
+          botoes: [],
+        };
+      return { selo: "Sem automação", classe: "", texto: "Nenhuma mensagem automática programada.", botoes: so([B.outro, B.desq]) };
+  }
+}
+
+function htmlNumeroWhats(n) {
+  if (n.wa_status === "tem")
+    return `<div class="num-whats">${ico("whats")}<span><strong class="num">${esc(fmtTel(n.wa_numero))}</strong>${n.wa_nome ? ` · ${esc(n.wa_nome)}` : ""}</span>
+      <button class="btn peq fant" data-auto="verificar" title="Conferir de novo se o número tem WhatsApp">Conferir</button>
+      <button class="btn peq fant" id="w-trocar">Trocar número</button></div>
+      <div class="linha troca-num" hidden><input id="w-outro" class="entrada num" inputmode="tel" placeholder="(15) 99999-9999"><button class="btn peq prim" id="w-outro-salvar">Usar este</button></div>`;
+  if (n.wa_status === "nao_tem" || n.wa_status === "sem_numero")
+    return `<div class="num-whats sem">${ico("alerta")}<span>${n.wa_status === "sem_numero" ? "Sem telefone cadastrado." : "Nenhum número cadastrado tem WhatsApp."} Tem outro número?</span></div>
+      <div class="linha troca-num"><input id="w-outro" class="entrada num" inputmode="tel" placeholder="(15) 99999-9999"><button class="btn peq prim" id="w-outro-salvar">Usar este</button></div>`;
+  return `<div class="num-whats">${ico("whats")}<span>${n.telefone ? `<span class="num">${esc(fmtTel(n.telefone))}</span> · ` : ""}WhatsApp ainda não conferido</span>
+    <button class="btn peq fant" data-auto="verificar">Conferir agora</button></div>`;
+}
+
+function htmlConversa(conv) {
+  if (!conv) return `<div class="carregando"><span class="giro"></span></div>`;
+  if (!conv.mensagens?.length) return `<p class="vazio-conv">Nenhuma mensagem por aqui ainda.</p>`;
+  let diaAnterior = "";
+  return conv.mensagens
+    .map((m) => {
+      const d = new Date(m.criado_em);
+      const dia = d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" }).replace(/\./g, "");
+      const sep = dia !== diaAnterior ? `<div class="conv-dia"><span>${esc(dia)}</span></div>` : "";
+      diaAnterior = dia;
+      const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+      let quem = "";
+      if (m.direcao === "saida") quem = m.origem === "automacao" ? `${ico("robo")}${esc(ROTULO_PASSO[m.passo] || "Automação")}` : m.origem === "celular" ? "Pelo celular" : "Pelo sistema";
+      else if (m.classificacao === "automatica") quem = "Resposta automática";
+      else if (m.classificacao === "descadastro") quem = "Pediu para sair";
+      const tique =
+        m.direcao === "saida"
+          ? `<span class="tique ${esc(m.status)}" title="${{ enviada: "Enviada", entregue: "Entregue", lida: "Lida" }[m.status] || ""}">${m.status === "enviada" ? "✓" : "✓✓"}</span>`
+          : "";
+      return `${sep}<div class="msg ${m.direcao === "saida" ? "enviada" : "recebida"}${m.classificacao === "automatica" ? " auto" : ""}"><div class="balao">${esc(m.texto)}</div>
+        <div class="msg-meta">${quem ? `<span>${quem}</span>` : ""}<time>${hora}</time>${tique}</div></div>`;
+    })
+    .join("");
+}
+
+function htmlWhatsApp(neg, G) {
+  const conv = G.conversa;
+  const et = E.resumo.etapas.find((e) => e.id === neg.etapa_id);
+  const st = estadoAutomacao(neg, et, conv);
+  const numero = neg.wa_numero || (neg.wa_status !== "nao_tem" && neg.wa_status !== "sem_numero" ? neg.telefone : "");
+  return `<section class="secao whats-secao" id="sec-whats">
+    <h3>WhatsApp <span class="selo ${st.classe}">${esc(st.selo)}</span></h3>
+    <div class="conteudo-s">
+      <p class="auto-status">${st.texto}</p>
+      ${htmlNumeroWhats(neg)}
+      ${st.botoes.length ? `<div class="acoes-auto">${st.botoes.map(([a, rot, cls]) => `<button class="btn peq ${cls || ""}" data-auto="${a}">${rot}</button>`).join("")}</div>` : ""}
+      <div class="conversa" aria-label="Conversa no WhatsApp">${htmlConversa(conv)}</div>
+      <div class="enviar-box">
+        ${
+          conv?.modelos?.length
+            ? `<select id="w-modelo" class="entrada" aria-label="Usar um modelo"><option value="">Usar um modelo…</option>${conv.modelos
+                .map((m, i) => `<option value="${i}">${esc(m.titulo)}</option>`)
+                .join("")}</select>`
+            : ""
+        }
+        <textarea id="w-texto" class="entrada" rows="3" placeholder="Escreva uma mensagem…"></textarea>
+        <div class="linha">
+          <span class="dica">Sai na hora, pelo seu WhatsApp.${neg.automacao === "ativa" ? " A automação para depois disso." : ""}</span>
+          <button class="btn prim" id="w-enviar" ${numero ? "" : "disabled"}>${ico("aprovar")} Enviar</button>
+        </div>
+      </div>
+    </div>
+  </section>`;
+}
+
+function ligarWhatsApp(neg, G) {
+  const sec = $("#sec-whats");
+  if (!sec) return;
+  $$("[data-auto]", sec).forEach((b) => (b.onclick = () => acaoAutomacao(neg, b.dataset.auto, b)));
+  const sel = $("#w-modelo");
+  if (sel)
+    sel.onchange = () => {
+      const m = G.conversa?.modelos?.[Number(sel.value)];
+      if (m) {
+        const ta = $("#w-texto");
+        ta.value = m.texto;
+        ta.dataset.mexeu = "1";
+        ta.focus();
+      }
+      sel.value = "";
+    };
+  $("#w-enviar").onclick = async () => {
+    const ta = $("#w-texto");
+    const t = ta.value.trim();
+    if (!t) return ta.focus();
+    const btn = $("#w-enviar");
+    btn.disabled = true;
+    try {
+      await api("automacao/enviar", { method: "POST", body: { negocio_id: neg.id, texto: t } });
+      ta.value = "";
+      ta.dataset.mexeu = "";
+      aviso("Mensagem enviada");
+      await carregarInfoGaveta();
+      if (E.ctx === "funil") carregarFunil(false);
+    } catch (e) {
+      aviso(e.message, true);
+      btn.disabled = false;
+    }
+  };
+  const trocar = $("#w-trocar");
+  if (trocar)
+    trocar.onclick = () => {
+      $(".troca-num", sec).hidden = false;
+      $("#w-outro").focus();
+    };
+  const salvarNum = $("#w-outro-salvar");
+  if (salvarNum) salvarNum.onclick = () => usarOutroNumero(neg.id, $("#w-outro").value);
+}
+
+// número informado à mão (o da Receita pode ser do contador): salva e confere o WhatsApp só nele
+async function usarOutroNumero(negId, valor) {
+  const d = digitos(valor);
+  if (d.length < 10 || d.length > 13) return aviso("Informe o número com DDD", true);
+  try {
+    await api(`data/negocios/${negId}`, { method: "PATCH", body: { telefone: d } });
+    let msg = "Número salvo";
+    let erro = false;
+    try {
+      const r = await api("automacao/acao", { method: "POST", body: { negocio_id: negId, acao: "verificar" } });
+      const v = r.verificacao || {};
+      if (v.erro) [msg, erro] = [`Número salvo. Não deu para conferir agora: ${v.erro}`, true];
+      else if (v.com_whatsapp) msg = "Número salvo: tem WhatsApp";
+      else [msg, erro] = ["Número salvo, mas ele não tem WhatsApp", true];
+    } catch (e) {
+      [msg, erro] = [`Número salvo. ${e.message}`, true];
+    }
+    aviso(msg, erro);
+    checarNovidades(true);
+    if (E.gaveta?.negId === negId) await carregarInfoGaveta();
+    if (E.ctx === "aprovar") await recarregarAprovar();
+    if (E.ctx === "funil") await carregarFunil(true);
+  } catch (e) {
+    aviso(e.message, true);
+  }
+}
+
+async function acaoAutomacao(neg, acao, botao) {
+  const CONFIRMAR = {
+    desqualificar: ["Desqualificar", "O negócio vai para a etapa de perdidos (motivo: Desqualificado) e nenhuma mensagem automática sai mais.", "Desqualificar", true],
+    outro_momento: ["Outro momento", "O negócio vai para Outro momento e recebe uma mensagem automática de retomada daqui a alguns meses (prazo em Ajustes → Automação).", "Mover"],
+    reabrir: ["Voltar para aprovação", "O contato volta para a primeira etapa e entra de novo na fila de aprovação do primeiro contato.", "Voltar"],
+    assumir: ["Assumir conversa", "Nenhuma mensagem automática será enviada para este contato.", "Assumir"],
+  };
+  if (CONFIRMAR[acao]) {
+    const [t, x, r, p] = CONFIRMAR[acao];
+    if (!(await confirmar(t, x, r, p))) return;
+  }
+  if (botao) botao.disabled = true;
+  try {
+    const r = await api("automacao/acao", { method: "POST", body: { negocio_id: neg.id, acao } });
+    if (acao === "verificar") {
+      const v = r.verificacao || {};
+      aviso(v.erro ? v.erro : v.com_whatsapp ? "Tem WhatsApp" : "Nenhum número cadastrado tem WhatsApp", !!v.erro || !v.com_whatsapp);
+    } else {
+      aviso({ pausar: "Automação pausada", retomar: "Automação retomada", assumir: "A conversa é com você", outro_momento: "Movido para Outro momento", desqualificar: "Desqualificado", reabrir: "De volta à fila de aprovação", continuar: "Sequência retomada" }[acao] || "Feito");
+    }
+    checarNovidades(true);
+    await carregarInfoGaveta();
+    if (E.ctx === "funil") await carregarFunil(true);
+    if (E.ctx === "aprovar") recarregarAprovar();
+  } catch (e) {
+    aviso(e.message, true);
+    if (botao) botao.disabled = false;
+  }
+}
+
 async function atualizarDaReceita() {
   const G = E.gaveta;
-  if (!G) return;
+  if (!G || !G.r) return;
   try {
     const novo = await api(`receita/cnpj/${G.r.cnpj}`);
     novo.cnpj = digitos(novo.cnpj);
@@ -1740,7 +2445,7 @@ async function atualizarDaReceita() {
     }
     aviso("Dados atualizados");
     desenharGaveta();
-    if (E.ctx === "funil") carregarFunil();
+    if (E.ctx === "funil") carregarFunil(true);
   } catch (e) {
     aviso(e.message, true);
   }
@@ -1791,40 +2496,955 @@ async function copiar(texto, msg) {
   }
 }
 
+// ============================================================ tela: APROVAR (primeiro contato)
+const nomeEntrada = () => E.resumo.etapas.find((e) => e.papel === "entrada")?.nome || "Prospecção";
+// item da fila → nome para exibir (empresa com a grafia do WhatsApp, quando bate)
+const nomeItem = (i) => (i.cnpj ? nomeEmpresa({ nome_fantasia: i.nome, razao_social: i.razao_social }, i.wa_nome) : i.nome || "Contato");
+
+// O número da Receita às vezes é do contador: avisa quando o nome no WhatsApp não parece ser da empresa.
+function alertaNomeWhats(nome, waNome) {
+  if (!waNome) return "";
+  const w = comparavel(waNome);
+  const n = comparavel(nome);
+  if (/contab|contador|contadores|escritorio cont/.test(w) && !/contab/.test(n)) return "parece ser o contador da empresa";
+  const COMUNS = new Set(["ltda", "eireli", "epp", "comercio", "servicos", "industria", "empresa", "loja", "grupo", "brasil", "sorocaba", "paulo"]);
+  const palavras = n.split(" ").filter((p) => p.length >= 4 && !COMUNS.has(p));
+  if (palavras.length && !palavras.some((p) => w.includes(p))) return "nome diferente da empresa; confira se o número é dela";
+  return "";
+}
+
+async function telaAprovar(main) {
+  main.innerHTML = `
+    <div class="topo"><h1>Aprovar</h1>
+      <button class="btn" id="ap-verificar" title="Conferir agora quais números têm WhatsApp">${ico("whats")} Conferir WhatsApp</button>
+      <button class="btn prim" id="ap-todos" disabled>${ico("aprovar")} Aprovar todos</button>
+    </div>
+    <div class="pagina aprovar">
+      <div class="painel-auto" id="ap-painel"></div>
+      <div id="ap-lista" class="fila"><div class="carregando"><span class="giro"></span> Carregando…</div></div>
+    </div>`;
+  $("#ap-verificar").onclick = verificarAgora;
+  $("#ap-todos").onclick = aprovarTodos;
+  if (!E.resumo.etapas.length) await carregarResumo();
+  await Promise.all([recarregarAprovar(), atualizarPainelAprovar()]);
+}
+
+async function recarregarAprovar() {
+  try {
+    E.aprovar.fila = await api("automacao/fila");
+  } catch (e) {
+    aviso(e.message, true);
+    E.aprovar.fila = { itens: [], agendados: [] };
+  }
+  desenharFila();
+}
+
+async function atualizarPainelAprovar() {
+  try {
+    E.aprovar.painel = await api("automacao/painel", { silencioso: true });
+  } catch {
+    return;
+  }
+  desenharPainel();
+}
+
+function desenharPainel() {
+  const el = $("#ap-painel");
+  const p = E.aprovar.painel;
+  if (!el || !p) return;
+  const h = p.hoje || {};
+  const c = [];
+  c.push(`<button class="chip ${p.ligada ? "ok" : "perigo"}" id="ap-ligar" title="${p.ligada ? "Toque para desligar" : "Toque para ligar"}"><span class="ponto"></span>Automação ${p.ligada ? "ligada" : "desligada"}</button>`);
+  if (!p.gowa_configurada) c.push(`<a class="chip perigo" href="#/ajustes" data-ir="aj-whatsapp">${ico("whats")}WhatsApp não configurado</a>`);
+  else if (p.gowa_alerta) c.push(`<a class="chip perigo" href="#/ajustes" data-ir="aj-whatsapp">${ico("alerta")}WhatsApp: ${esc(p.gowa_alerta)}</a>`);
+  else c.push(`<span class="chip ok">${ico("whats")}WhatsApp conectado</span>`);
+  c.push(`<span class="chip">Hoje: <strong class="num">${h.novos || 0}/${h.limite_novos ?? "—"}</strong> primeiros contatos · <strong class="num">${h.envios || 0}/${h.limite_envios ?? "—"}</strong> envios</span>`);
+  c.push(p.janela_aberta ? `<span class="chip ok">No horário de envio</span>` : `<span class="chip">Fora do horário · volta ${esc(quando(p.proxima_abertura))}</span>`);
+  const minRel = p.ultimo_relogio ? (Date.now() - Date.parse(p.ultimo_relogio)) / 60000 : null;
+  if (p.ligada && (minRel === null || minRel > 10))
+    c.push(`<a class="chip perigo" href="#/ajustes" data-ir="aj-relogio">${ico("sistema")}${minRel === null ? "Relógio ainda não rodou" : `Relógio parado há ${Math.round(minRel)} min`}</a>`);
+  const prox = (p.proximos || [])
+    .slice(0, 4)
+    .map((x) => {
+      const ja = Date.parse(x.proxima_acao_em) <= Date.now();
+      return `<span class="prox"><strong>${esc(x.rotulo)}</strong> · ${esc(titulo(x.empresa || x.contato_nome || ""))} · ${ja ? "na fila" : esc(quando(x.proxima_acao_em))}</span>`;
+    })
+    .join("");
+  el.innerHTML = `<div class="chips">${c.join("")}</div>${prox ? `<div class="proximos"><span class="rotulo">Próximas ações</span>${prox}</div>` : ""}`;
+  $("#ap-ligar").onclick = alternarAutomacao;
+}
+
+async function alternarAutomacao() {
+  const p = E.aprovar.painel;
+  if (!p) return;
+  if (!p.ligada && !p.gowa_configurada) {
+    aviso("Conecte o WhatsApp antes de ligar a automação", true);
+    return irParaAjuste("aj-whatsapp");
+  }
+  const ok = await confirmar(
+    p.ligada ? "Desligar a automação" : "Ligar a automação",
+    p.ligada
+      ? "Nenhuma mensagem automática sai enquanto estiver desligada. Os prazos continuam contando: o que vencer nesse tempo sai quando você ligar de novo."
+      : "Os primeiros contatos aprovados e os follow-ups passam a sair sozinhos, só em dias úteis e no horário definido em Ajustes.",
+    p.ligada ? "Desligar" : "Ligar"
+  );
+  if (!ok) return;
+  try {
+    await api("automacao/config", { method: "PUT", body: { automacao_ligada: p.ligada ? "0" : "1" } });
+    aviso(p.ligada ? "Automação desligada" : "Automação ligada");
+    await atualizarPainelAprovar();
+  } catch (e) {
+    aviso(e.message, true);
+  }
+}
+
+function desenharFila() {
+  const el = $("#ap-lista");
+  const F = E.aprovar.fila;
+  if (!el || !F) return;
+  const prontos = F.itens.filter((i) => i.wa_status === "tem");
+  const conferindo = F.itens.filter((i) => !i.wa_status);
+  const semWhats = F.itens.filter((i) => i.wa_status === "nao_tem" || i.wa_status === "sem_numero");
+  const todos = $("#ap-todos");
+  if (todos) {
+    todos.disabled = !prontos.length;
+    todos.innerHTML = `${ico("aprovar")} Aprovar todos${prontos.length > 1 ? ` (${prontos.length})` : ""}`;
+  }
+  const verif = $("#ap-verificar");
+  if (verif) verif.hidden = !conferindo.length;
+  if (!F.itens.length && !F.agendados.length) {
+    el.innerHTML = `<div class="vazio">${ico("aprovar")}<h3>Nada para aprovar</h3>
+      <p>Empresas enviadas ao funil na etapa “${esc(nomeEntrada())}” aparecem aqui com o primeiro contato já preenchido. Você revisa, ajusta se quiser e aprova.</p></div>`;
+    return;
+  }
+  el.innerHTML = `
+    ${prontos.length ? `<h2 class="sec-fila">Prontos para aprovar <span class="q num">${prontos.length}</span></h2>${prontos.map(htmlItemFila).join("")}` : ""}
+    ${
+      conferindo.length
+        ? `<h2 class="sec-fila">Conferindo o WhatsApp <span class="q num">${conferindo.length}</span></h2>
+           <p class="dica">O sistema confere alguns números a cada 2 minutos, com limite por dia, para não chamar a atenção do WhatsApp. “Conferir WhatsApp” adianta alguns agora.</p>
+           ${conferindo.map(htmlItemCompacto).join("")}`
+        : ""
+    }
+    ${semWhats.length ? `<details class="sec-det"><summary class="sec-fila">Sem WhatsApp <span class="q num">${semWhats.length}</span></summary>${semWhats.map(htmlItemCompacto).join("")}</details>` : ""}
+    ${
+      F.agendados.length
+        ? `<details class="sec-det" ${prontos.length ? "" : "open"}><summary class="sec-fila">Aprovados, aguardando o envio <span class="q num">${F.agendados.length}</span></summary>
+           <p class="dica">Saem nesta ordem, no horário de envio, respeitando o intervalo e o limite do dia.</p>
+           <div class="agendados">${F.agendados.map(htmlAgendado).join("")}</div></details>`
+        : ""
+    }`;
+  ligarFila(el);
+}
+
+function htmlItemFila(i) {
+  const nome = nomeItem(i);
+  const alerta = i.cnpj ? alertaNomeWhats(nome, i.wa_nome) : "";
+  const sub = [i.cidade && `${titulo(i.cidade)} - ${i.uf}`, i.segmento].filter(Boolean).join(" · ") || (i.fonte === "site" ? "Contato do site" : "Contato");
+  return `<article class="item-fila" data-id="${i.id}">
+    <div class="cab">
+      <div class="tit"><div class="nome">${esc(nome)}</div><div class="sub">${esc(sub)}</div></div>
+      <span class="selo ok" title="Número que vai receber">${ico("whats")}<span class="num">${esc(fmtTel(i.wa_numero))}</span></span>
+    </div>
+    ${i.wa_nome && (alerta || comparavel(i.wa_nome) !== comparavel(nome)) ? `<div class="wa-nome ${alerta ? "alerta" : ""}">${alerta ? ico("alerta") : ""}<span>No WhatsApp: <strong>${esc(i.wa_nome)}</strong>${alerta ? ` — ${esc(alerta)}` : ""}</span></div>` : ""}
+    <textarea class="entrada texto-fila" rows="5" aria-label="Mensagem para ${esc(nome)}">${esc(i.texto)}</textarea>
+    <div class="rod">
+      <span class="dica estado-texto"></span>
+      <button class="btn peq fant" data-a="ficha">Ficha</button>
+      <button class="btn peq fant ico-btn" data-a="mais" aria-label="Mais opções" title="Mais opções">⋯</button>
+      <button class="btn peq prim" data-a="aprovar">${ico("aprovar")} Aprovar</button>
+    </div>
+  </article>`;
+}
+
+function htmlItemCompacto(i) {
+  const nome = nomeItem(i);
+  const sem = i.wa_status === "nao_tem" || i.wa_status === "sem_numero";
+  const sub = [i.cidade && `${titulo(i.cidade)} - ${i.uf}`, i.telefone ? fmtTel(i.telefone) : "sem telefone"].filter(Boolean).join(" · ");
+  return `<article class="item-fila compacto" data-id="${i.id}">
+    <div class="cab">
+      <div class="tit"><div class="nome">${esc(nome)}</div><div class="sub">${esc(sub)}</div></div>
+      ${sem ? `<span class="selo perigo">Sem WhatsApp</span>` : `<span class="selo"><span class="giro mini"></span>Conferindo</span>`}
+    </div>
+    <div class="rod">
+      <button class="btn peq fant" data-a="ficha">Ficha</button>
+      ${sem ? `<button class="btn peq" data-a="numero">Usar outro número</button>` : ""}
+      <button class="btn peq fant ico-btn" data-a="mais" aria-label="Mais opções" title="Mais opções">⋯</button>
+    </div>
+  </article>`;
+}
+
+function htmlAgendado(a, i) {
+  const nome = a.cnpj ? nomeEmpresa({ nome_fantasia: a.nome, razao_social: a.razao_social }, a.wa_nome) : a.nome || "Contato";
+  return `<div class="agendado" data-id="${a.id}">
+    <span class="pos num">${i + 1}º</span><span class="nome">${esc(nome)}</span><span class="dica num">${esc(fmtTel(a.wa_numero))}</span>
+    <button class="btn peq fant" data-a="ficha">Ficha</button><button class="btn peq" data-a="cancelar">Cancelar</button>
+  </div>`;
+}
+
+// caixa de texto do tamanho da mensagem (no iPhone, sem rolagem dentro da caixa)
+function autoAltura(ta) {
+  ta.style.height = "auto";
+  ta.style.height = `${Math.min(ta.scrollHeight + 2, 460)}px`;
+}
+
+function ligarFila(el) {
+  $$(".texto-fila", el).forEach(autoAltura);
+  el.oninput = (ev) => ev.target.classList.contains("texto-fila") && autoAltura(ev.target);
+  el.onclick = async (ev) => {
+    const b = ev.target.closest("[data-a]");
+    if (!b) return;
+    const card = b.closest("[data-id]");
+    const id = Number(card.dataset.id);
+    const item = E.aprovar.fila.itens.find((x) => x.id === id);
+    const a = b.dataset.a;
+    if (a === "ficha") return abrirNegocioPorId(id);
+    if (a === "aprovar") return aprovarItens([{ negocio_id: id, texto: $(".texto-fila", card).value }], [card]);
+    if (a === "cancelar") return acaoFila(id, "reabrir");
+    if (a === "numero") return pedirOutroNumero(id);
+    if (a === "mais") return menuItemFila(b, item, card);
+  };
+  // o texto editado fica salvo (rascunho) ao sair da caixa
+  el.onchange = async (ev) => {
+    const ta = ev.target.closest(".texto-fila");
+    if (!ta) return;
+    const card = ta.closest("[data-id]");
+    const id = Number(card.dataset.id);
+    const item = E.aprovar.fila.itens.find((x) => x.id === id);
+    const estado = $(".estado-texto", card);
+    try {
+      const r = await api("automacao/rascunho", { method: "POST", body: { negocio_id: id, texto: ta.value } });
+      if (item) item.texto = r.texto;
+      if (!ta.value.trim()) ta.value = r.texto;
+      estado.textContent = "Texto salvo";
+      setTimeout(() => (estado.textContent = ""), 2500);
+    } catch (e) {
+      aviso(e.message, true);
+    }
+  };
+}
+
+function menuItemFila(botao, item, card) {
+  if (!item) return;
+  const pronto = item.wa_status === "tem";
+  abrirMenu(
+    botao,
+    `${pronto ? `<button data-v="restaurar">Voltar ao texto do modelo</button><button data-v="numero">Usar outro número</button>` : ""}
+     <button data-v="assumir">Vou falar eu mesmo (tirar da fila)</button>
+     <div class="sep"></div>
+     <button data-v="desqualificar">Desqualificar</button>
+     <button data-v="apagar" style="color:var(--danger)">Tirar do funil</button>`,
+    async (v) => {
+      try {
+        if (v === "restaurar") {
+          const r = await api("automacao/rascunho", { method: "POST", body: { negocio_id: item.id, texto: "" } });
+          $(".texto-fila", card).value = r.texto;
+          item.texto = r.texto;
+          return aviso("Texto do modelo restaurado");
+        }
+        if (v === "numero") return pedirOutroNumero(item.id);
+        if (v === "assumir") return acaoFila(item.id, "assumir");
+        if (v === "desqualificar") return acaoFila(item.id, "desqualificar");
+        if (v === "apagar") {
+          if (!(await confirmar("Tirar do funil", "O negócio e as anotações serão apagados.", "Tirar", true))) return;
+          await api(`data/negocios/${item.id}`, { method: "DELETE" });
+          aviso("Removido do funil");
+          checarNovidades(true);
+          await carregarResumo();
+          return recarregarAprovar();
+        }
+      } catch (e) {
+        aviso(e.message, true);
+      }
+    }
+  );
+}
+
+async function pedirOutroNumero(id) {
+  const v = await pedirTexto("Usar outro número", "WhatsApp com DDD", "", "(15) 99999-9999");
+  if (v) await usarOutroNumero(id, v);
+}
+
+async function acaoFila(id, acao) {
+  try {
+    await api("automacao/acao", { method: "POST", body: { negocio_id: id, acao } });
+    aviso({ assumir: "Tirado da fila — a conversa é com você", desqualificar: "Desqualificado", reabrir: "Envio cancelado — voltou para a fila" }[acao] || "Feito");
+    checarNovidades(true);
+    await Promise.all([recarregarAprovar(), atualizarPainelAprovar()]);
+  } catch (e) {
+    aviso(e.message, true);
+  }
+}
+
+async function aprovarItens(itens, cards = []) {
+  if (itens.some((i) => !String(i.texto || "").trim())) return aviso("A mensagem não pode ficar vazia", true);
+  cards.forEach((c) => c.classList.add("saindo"));
+  try {
+    const r = await api("automacao/aprovar", { method: "POST", body: { itens } });
+    const p = E.aprovar.painel;
+    if (r.aprovados) aviso(`${plural(r.aprovados, "contato aprovado", "contatos aprovados")}${p && !p.ligada ? " — a automação está desligada" : ""}`);
+    else aviso("Nada foi aprovado (a fila mudou). Atualizando…", true);
+    checarNovidades(true);
+    await Promise.all([recarregarAprovar(), atualizarPainelAprovar()]);
+  } catch (e) {
+    cards.forEach((c) => c.classList.remove("saindo"));
+    aviso(e.message, true);
+  }
+}
+
+async function aprovarTodos() {
+  const cards = $$("#ap-lista .item-fila:not(.compacto)");
+  if (!cards.length) return;
+  const p = E.aprovar.painel || {};
+  const cfg = p.config || {};
+  const intervalo = cfg.intervalo_min || 4;
+  const ok = await confirmar(
+    `Aprovar ${plural(cards.length, "primeiro contato", "primeiros contatos")}`,
+    `As mensagens saem aos poucos: uma a cada ${intervalo} a ${intervalo * 2} minutos, até ${cfg.novos_por_dia || 10} primeiros contatos por dia, em dias úteis das ${cfg.hora_inicio || "09:00"} às ${cfg.hora_fim || "17:00"}.${p.ligada === false ? " A automação está desligada: nada sai até você ligar." : ""} Dá para cancelar enquanto não saírem.`,
+    "Aprovar"
+  );
+  if (!ok) return;
+  aprovarItens(
+    cards.map((c) => ({ negocio_id: Number(c.dataset.id), texto: $(".texto-fila", c).value })),
+    cards
+  );
+}
+
+async function verificarAgora() {
+  const b = $("#ap-verificar");
+  b.disabled = true;
+  try {
+    const r = await api("automacao/verificar", { method: "POST", body: {} });
+    aviso(
+      r.erro ? r.erro : r.verificados ? `${plural(r.verificados, "número conferido", "números conferidos")}: ${r.com_whatsapp} com WhatsApp` : "Nenhum número para conferir agora",
+      !!r.erro
+    );
+    checarNovidades(true);
+    await recarregarAprovar();
+  } catch (e) {
+    aviso(e.message, true);
+  }
+  b.disabled = false;
+}
+
 // ============================================================ tela: AJUSTES
-function telaAjustes(main) {
+const SECOES_AJ = [
+  ["aj-whatsapp", "WhatsApp"],
+  ["aj-automacao", "Automação"],
+  ["aj-mensagens", "Mensagens"],
+  ["aj-relogio", "Relógio"],
+  ["aj-site", "Site"],
+  ["aj-ia", "IA"],
+  ["aj-etapas", "Etapas"],
+  ["aj-modelos", "Modelos"],
+  ["aj-backup", "Cópia e acesso"],
+];
+const ORIGEM = location.origin;
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+const campo = (id, rotulo, valor, extra = "", dica = "") =>
+  `<div class="campo"><label for="${id}">${rotulo}</label><input id="${id}" class="entrada" value="${esc(valor ?? "")}" ${extra}>${dica ? `<p class="dica">${dica}</p>` : ""}</div>`;
+const valor = (id) => $(`#${id}`)?.value ?? "";
+
+async function telaAjustes(main, secao) {
+  main.innerHTML = `<div class="topo"><h1>Ajustes</h1></div><div class="pagina"><div class="carregando"><span class="giro"></span> Carregando…</div></div>`;
+  let cfg;
+  try {
+    cfg = await api("automacao/config");
+  } catch (e) {
+    $(".pagina", main).innerHTML = `<div class="alerta">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!E.resumo.etapas.length) await carregarResumo();
   main.innerHTML = `
     <div class="topo"><h1>Ajustes</h1></div>
     <div class="pagina"><div class="ajustes">
-      <section class="bloco">
-        <h2>Etapas do funil</h2>
-        <p>Renomeie, troque a ordem e defina quais etapas contam como venda ganha ou perdida.</p>
-        <div id="etapas"></div>
-        <div class="linha" style="margin-top:12px">
-          <button class="btn" id="etapa-nova">${ico("mais")} Nova etapa</button>
-          <button class="btn prim" id="etapas-salvar" style="margin-left:auto">Salvar etapas</button>
-        </div>
-      </section>
-      <section class="bloco">
-        <h2>Modelos de mensagem</h2>
-        <p>Aparecem ao tocar em WhatsApp ou E-mail na ficha. Use {empresa}, {razao_social}, {cidade}, {segmento} e {socio} para preencher automaticamente.</p>
-        <div id="modelos"></div>
-        <button class="btn" id="modelo-novo">${ico("mais")} Novo modelo</button>
-      </section>
-      <section class="bloco">
-        <h2>Cópia de segurança</h2>
-        <p>Baixa listas, funil, anotações e modelos em um arquivo JSON.</p>
-        <button class="btn" id="backup">${ico("baixar")} Baixar cópia</button>
-      </section>
-      <section class="bloco">
-        <h2>Acesso neste aparelho</h2>
-        <p>Se o projeto usa chave de acesso, ela fica salva neste navegador.</p>
-        <button class="btn" id="sair">Esquecer chave neste aparelho</button>
-      </section>
+      <nav class="aj-indice" aria-label="Seções">${SECOES_AJ.map(([id, nome]) => `<button class="pilula" type="button" data-sec="${id}">${nome}</button>`).join("")}</nav>
+      ${blocoWhatsApp(cfg)}
+      ${blocoAutomacao(cfg)}
+      ${blocoMensagens(cfg)}
+      ${blocoRelogio(cfg)}
+      ${blocoSite(cfg)}
+      ${blocoIA(cfg)}
+      ${blocoEtapas()}
+      ${blocoModelos()}
+      ${blocoBackup()}
     </div></div>`;
+  $(".aj-indice", main).onclick = (ev) => {
+    const b = ev.target.closest("[data-sec]");
+    if (b) $(`#${b.dataset.sec}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  // botões "Copiar" (data-copiar = id do bloco de código)
+  main.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-copiar]");
+    if (b) copiar($(`#${b.dataset.copiar}`).textContent, "Copiado");
+  });
+  ligarWhatsAppAjustes(cfg);
+  ligarAutomacaoAjustes();
+  ligarMensagens(cfg);
+  ligarRelogio(cfg);
+  ligarSite();
+  ligarIA();
+  ligarEtapas();
+  ligarModelos();
+  ligarBackup();
+  if (secao) setTimeout(() => $(`#${secao}`)?.scrollIntoView({ block: "start" }), 60);
+}
 
+async function salvarConfig(pares, msg = "Salvo") {
+  try {
+    await api("automacao/config", { method: "PUT", body: pares });
+    aviso(msg);
+    return true;
+  } catch (e) {
+    aviso(e.message, true);
+    return false;
+  }
+}
+
+// ---------- WhatsApp (Gowa)
+function dominioGowa(cfg) {
+  try {
+    return cfg.gowa_url ? new URL(cfg.gowa_url).hostname : "gowa.tangit.com.br";
+  } catch {
+    return "gowa.tangit.com.br";
+  }
+}
+
+function blocoWhatsApp(cfg) {
+  return `<section class="bloco" id="aj-whatsapp">
+    <h2>WhatsApp</h2>
+    <p>Envia e recebe pelo seu número atual, por meio da Gowa instalada na VPS. Funciona como o WhatsApp Web: o celular continua normal.</p>
+    <div class="status-linha" id="gw-status"><span class="giro mini"></span> Conferindo a conexão…</div>
+    <div class="grade-2">
+      ${campo("gw-url", "Endereço da Gowa", cfg.gowa_url, 'placeholder="https://gowa.tangit.com.br" inputmode="url" autocapitalize="off"')}
+      ${campo("gw-usuario", "Usuário", cfg.gowa_usuario, 'autocapitalize="off" autocomplete="off"')}
+      ${campo("gw-senha", "Senha", cfg.gowa_senha, 'autocapitalize="off" autocomplete="off" spellcheck="false"')}
+      ${campo("gw-device", "Aparelho na Gowa", cfg.gowa_device, 'placeholder="preenchido ao conectar" autocapitalize="off"')}
+    </div>
+    <div class="acoes-bloco">
+      <button class="btn" id="gw-testar">Testar conexão</button>
+      <button class="btn" id="gw-conectar">${ico("whats")} Conectar o WhatsApp</button>
+      <button class="btn" id="gw-teste-envio">Mensagem de teste</button>
+      <button class="btn prim" id="gw-salvar">Salvar</button>
+    </div>
+    <details class="sub-det" ${cfg.gowa_url ? "" : "open"}>
+      <summary>Instalar a Gowa na VPS</summary>
+      <p class="dica">Gera um comando para colar no terminal da VPS (passo a passo no LEIAME, parte 2). Ele instala a Gowa com HTTPS e o relógio dos envios, já com o endereço deste sistema e as chaves.</p>
+      ${campo("gw-dominio", "Endereço que a Gowa vai usar", dominioGowa(cfg), 'autocapitalize="off" inputmode="url"', "O mesmo nome criado no DNS da Cloudflare (registro A apontando para o IP da VPS, nuvem cinza).")}
+      <div class="acoes-bloco"><button class="btn prim" id="gw-gerar">Gerar comando</button></div>
+      <div id="gw-comando-caixa" hidden>
+        <pre class="codigo" id="gw-comando"></pre>
+        <div class="acoes-bloco"><a class="btn" id="gw-ver" target="_blank" rel="noopener">Ver o script</a><button class="btn prim" data-copiar="gw-comando">${ico("copiar")} Copiar comando</button></div>
+        <p class="dica">Vale por 30 minutos. O endereço da Gowa já ficou salvo acima.</p>
+      </div>
+    </details>
+    <details class="sub-det">
+      <summary>Dados do webhook (só se for configurar à mão)</summary>
+      <dl class="dl">
+        <dt>URL</dt><dd><code>${esc(ORIGEM)}/api/gowa/webhook</code></dd>
+        <dt>Segredo</dt><dd><code>${esc(cfg.webhook_segredo)}</code></dd>
+        <dt>Eventos</dt><dd><code>message,message.ack</code></dd>
+      </dl>
+    </details>
+  </section>`;
+}
+
+async function atualizarStatusGowa() {
+  const el = $("#gw-status");
+  if (!el) return;
+  if (!valor("gw-url")) {
+    el.innerHTML = `<span class="selo">Não configurado</span> Instale a Gowa na VPS (script abaixo) e depois toque em Conectar o WhatsApp.`;
+    return;
+  }
+  el.innerHTML = `<span class="giro mini"></span> Conferindo a conexão…`;
+  try {
+    const r = await api("automacao/testar", { method: "POST", body: {} });
+    if (r.ok) el.innerHTML = `<span class="selo ok">${ico("check")}Conectado</span> WhatsApp ${r.numero ? `<strong class="num">${esc(fmtTel(r.numero))}</strong>` : ""} ligado à Gowa.`;
+    else if (r.status) el.innerHTML = `<span class="selo aviso">WhatsApp desconectado</span> A Gowa está no ar, mas sem o WhatsApp. Toque em <strong>Conectar o WhatsApp</strong>.`;
+    else el.innerHTML = `<span class="selo perigo">Sem conexão</span> ${esc(r.erro || "A Gowa não respondeu.")}`;
+  } catch (e) {
+    el.innerHTML = `<span class="selo perigo">Erro</span> ${esc(e.message)}`;
+  }
+}
+
+function ligarWhatsAppAjustes(cfg) {
+  const dadosGowa = () => ({ gowa_url: valor("gw-url").trim(), gowa_usuario: valor("gw-usuario").trim(), gowa_senha: valor("gw-senha").trim(), gowa_device: valor("gw-device").trim() });
+  $("#gw-salvar").onclick = async () => {
+    if (await salvarConfig(dadosGowa(), "Conexão salva")) atualizarStatusGowa();
+  };
+  $("#gw-testar").onclick = async () => {
+    await salvarConfig(dadosGowa(), "Conexão salva");
+    atualizarStatusGowa();
+  };
+  $("#gw-gerar").onclick = async () => {
+    const dominio = valor("gw-dominio").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!dominio) return aviso("Informe o endereço da Gowa", true);
+    if (!valor("gw-usuario").trim() || !valor("gw-senha").trim()) return aviso("Usuário e senha da Gowa não podem ficar vazios", true);
+    // usuário e senha que aparecem acima são os que vão no script
+    if (!(await salvarConfig({ gowa_usuario: valor("gw-usuario").trim(), gowa_senha: valor("gw-senha").trim() }, "Dados salvos"))) return;
+    try {
+      const r = await api("automacao/instalacao", { method: "POST", body: { dominio } });
+      $("#gw-comando").textContent = r.comando;
+      $("#gw-ver").href = r.link;
+      $("#gw-comando-caixa").hidden = false;
+      $("#gw-url").value = `https://${dominio}`;
+      aviso("Comando gerado");
+    } catch (e) {
+      aviso(e.message, true);
+    }
+  };
+  $("#gw-conectar").onclick = async () => {
+    if (!valor("gw-url").trim()) return aviso("Preencha o endereço da Gowa (ou gere o comando de instalação)", true);
+    await salvarConfig(dadosGowa(), "Conexão salva");
+    await conectarWhatsApp();
+    const c = await api("automacao/config").catch(() => null);
+    if (c) $("#gw-device").value = c.gowa_device || "";
+    atualizarStatusGowa();
+  };
+  $("#gw-teste-envio").onclick = mensagemDeTeste;
+  atualizarStatusGowa();
+}
+
+async function conectarWhatsApp() {
+  let aberto = true;
+  let aba = "qr";
+  let tQR = null;
+  const promessa = abrirModal({
+    titulo: "Conectar o WhatsApp",
+    texto: "Use o número que você já usa. O celular continua funcionando normalmente.",
+    corpo: `
+      <div class="alternar abas" role="group" aria-label="Forma de conectar">
+        <button type="button" data-aba="qr" aria-pressed="true">QR code (no Mac)</button>
+        <button type="button" data-aba="codigo" aria-pressed="false">Código (só iPhone)</button>
+      </div>
+      <div id="cx-qr">
+        <div class="qr-box" id="cx-qr-img"><span class="giro"></span></div>
+        <ol class="passos">
+          <li>No iPhone, abra o <strong>WhatsApp</strong> e toque em <strong>Configurações</strong> (barra inferior, à direita).</li>
+          <li>Toque em <strong>Aparelhos conectados</strong> e depois em <strong>Conectar um aparelho</strong>.</li>
+          <li>Aponte a câmera para o QR code acima. Ele muda a cada 30 segundos.</li>
+        </ol>
+      </div>
+      <div id="cx-codigo" hidden>
+        <div class="linha"><input id="cx-tel" class="entrada num" inputmode="tel" placeholder="Seu WhatsApp: (15) 99999-9999"><button class="btn" id="cx-gerar" type="button">Gerar código</button></div>
+        <div class="codigo-par num" id="cx-par" hidden></div>
+        <ol class="passos">
+          <li>No iPhone: <strong>WhatsApp</strong> → <strong>Configurações</strong> (barra inferior, à direita) → <strong>Aparelhos conectados</strong> → <strong>Conectar um aparelho</strong>.</li>
+          <li>Na tela da câmera, toque em <strong>Conectar com número de telefone</strong> (parte de baixo).</li>
+          <li>Digite o código de 8 caracteres que aparece aqui.</li>
+        </ol>
+      </div>
+      <p class="status-linha" id="cx-estado"><span class="giro mini"></span> Aguardando a conexão…</p>`,
+    botoes: [{ rotulo: "Fechar", valor: null }],
+  });
+  promessa.then(() => (aberto = false));
+  const m = $("#modal");
+  const conectado = (numero) => {
+    if (!aberto) return;
+    aberto = false;
+    clearTimeout(tQR);
+    $("#cx-estado", m).innerHTML = `<span class="selo ok">${ico("check")}Conectado</span> ${numero ? `WhatsApp <strong class="num">${esc(fmtTel(numero))}</strong>` : ""}`;
+    aviso("WhatsApp conectado");
+    setTimeout(() => fecharModalAtual?.(), 1600);
+  };
+  const carregarQR = async () => {
+    const box = $("#cx-qr-img", m);
+    if (!box) return;
+    box.innerHTML = `<span class="giro"></span>`;
+    try {
+      const r = await api("automacao/conectar", { method: "POST", body: { modo: "qr" } });
+      if (r.conectado) return conectado(r.numero);
+      if (!aberto) return;
+      box.innerHTML = `<img src="${r.qr}" alt="QR code para conectar o WhatsApp">`;
+      clearTimeout(tQR);
+      tQR = setTimeout(() => aberto && aba === "qr" && carregarQR(), (r.duracao || 30) * 1000);
+    } catch (e) {
+      box.innerHTML = `<p class="alerta">${esc(e.message)}</p>`;
+    }
+  };
+  $$("[data-aba]", m).forEach(
+    (b) =>
+      (b.onclick = () => {
+        aba = b.dataset.aba;
+        $$("[data-aba]", m).forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+        $("#cx-qr", m).hidden = aba !== "qr";
+        $("#cx-codigo", m).hidden = aba !== "codigo";
+        if (aba === "qr") carregarQR();
+        else clearTimeout(tQR);
+      })
+  );
+  $("#cx-gerar", m).onclick = async () => {
+    const tel = digitos($("#cx-tel", m).value);
+    if (tel.length < 10) return aviso("Informe seu número com DDD", true);
+    const par = $("#cx-par", m);
+    par.hidden = false;
+    par.textContent = "…";
+    try {
+      const r = await api("automacao/conectar", { method: "POST", body: { modo: "codigo", telefone: tel } });
+      if (r.conectado) return conectado(r.numero);
+      par.textContent = r.codigo || "—";
+    } catch (e) {
+      par.textContent = "";
+      par.hidden = true;
+      aviso(e.message, true);
+    }
+  };
+  carregarQR();
+  // confere a cada 3 s se o WhatsApp conectou
+  (async () => {
+    while (aberto) {
+      await esperar(3000);
+      if (!aberto) break;
+      try {
+        const r = await api("automacao/testar", { method: "POST", body: {}, silencioso: true });
+        if (r.ok) return conectado(r.numero);
+      } catch {}
+    }
+  })();
+  await promessa;
+  aberto = false;
+  clearTimeout(tQR);
+}
+
+async function mensagemDeTeste() {
+  const r = await abrirModal({
+    titulo: "Mensagem de teste",
+    texto: "Sai na hora pelo WhatsApp conectado. Use outro número seu (ou de alguém próximo) para ver chegando.",
+    corpo: `${campo("mt-num", "Para", "", 'inputmode="tel" placeholder="(15) 99999-9999"')}
+      <div class="campo"><label for="mt-txt">Mensagem</label><textarea id="mt-txt" class="entrada" rows="2">Teste da automação de WhatsApp ✅</textarea></div>`,
+    botoes: [
+      { rotulo: "Cancelar", valor: null },
+      {
+        rotulo: "Enviar",
+        classe: "prim",
+        acao: (el) => {
+          const numero = digitos($("#mt-num", el).value);
+          if (numero.length < 10) {
+            aviso("Informe o número com DDD", true);
+            return false;
+          }
+          return { numero, texto: $("#mt-txt", el).value.trim() };
+        },
+      },
+    ],
+  });
+  if (!r) return;
+  try {
+    await api("automacao/teste-envio", { method: "POST", body: r });
+    aviso("Mensagem enviada");
+  } catch (e) {
+    aviso(e.message, true);
+  }
+}
+
+// ---------- Automação (horário, limites, prazos)
+function blocoAutomacao(cfg) {
+  const n = (id, chave, extra = 'min="0"') => `<input id="${id}" class="entrada num curto" type="number" inputmode="numeric" value="${esc(cfg[chave])}" ${extra}>`;
+  return `<section class="bloco" id="aj-automacao">
+    <h2>Automação</h2>
+    <p>Quando e quanto o sistema envia. Só em dias úteis (feriados nacionais já descontados) e dentro do horário.</p>
+    <label class="chave-linha"><input type="checkbox" id="au-ligada" ${cfg.automacao_ligada === "1" ? "checked" : ""}><span class="chave" aria-hidden="true"></span><span><strong>Automação ligada</strong><br><span class="dica">Desligada, nada sai sozinho (você ainda aprova e responde pela ficha).</span></span></label>
+    <div class="grade-2">
+      ${campo("au-inicio", "Começa às", cfg.hora_inicio, 'type="time" step="900"')}
+      ${campo("au-fim", "Termina às", cfg.hora_fim, 'type="time" step="900"')}
+    </div>
+    <h3 class="sub">Limites</h3>
+    <p class="dica">Ritmo de pessoa, para o WhatsApp não estranhar o número. Comece baixo e aumente aos poucos.</p>
+    <div class="grade-2">
+      <div class="campo"><label for="au-novos">Primeiros contatos por dia</label>${n("au-novos", "novos_por_dia")}</div>
+      <div class="campo"><label for="au-envios">Mensagens por dia (total)</label>${n("au-envios", "envios_por_dia")}</div>
+      <div class="campo"><label for="au-intervalo">Intervalo mínimo entre mensagens (min)</label>${n("au-intervalo", "intervalo_min", 'min="1"')}</div>
+      <div class="campo"><label for="au-verif">Números conferidos por dia</label>${n("au-verif", "verificacoes_por_dia")}</div>
+    </div>
+    <h3 class="sub">Prazos da sequência</h3>
+    <div class="prazos">
+      <div class="prazo"><span class="et">Follow-up</span> ${n("au-f1", "followup1_dias_uteis", 'min="1"')} <span>dias úteis depois do primeiro contato</span></div>
+      <div class="prazo"><span class="et">Nova tentativa</span> ${n("au-f2", "followup2_dias", 'min="1"')} <span>dias depois do follow-up</span></div>
+      <div class="prazo"><span class="et">Outro momento</span> ${n("au-sr", "sem_resposta_dias_uteis", 'min="1"')} <span>dias úteis sem resposta depois da nova tentativa</span></div>
+      <div class="prazo"><span class="et">Retomada</span> ${n("au-om", "outro_momento_dias", 'min="1"')} <span>dias depois de ir para Outro momento</span></div>
+      <div class="prazo"><span class="et">Encerrar</span> ${n("au-enc", "encerrar_dias", 'min="1"')} <span>dias sem resposta depois da retomada</span></div>
+    </div>
+    <div class="campo"><label for="au-feriados">Feriados locais</label>
+      <textarea id="au-feriados" class="entrada" rows="3" placeholder="15/08 Aniversário de Sorocaba">${esc(cfg.feriados_extras)}</textarea>
+      <p class="dica">Um por linha, no formato dd/mm (ou dd/mm/aaaa para um ano só). Os nacionais, Carnaval, Sexta-feira Santa e Corpus Christi já estão no sistema.</p></div>
+    <div class="campo"><label for="au-rodape">Aviso no fim do primeiro contato</label>
+      <input id="au-rodape" class="entrada" value="${esc(cfg.rodape_descadastro)}">
+      <p class="dica">Quem responder SAIR (ou parecido) deixa de receber na hora e vai para Perdido. Vazio = sem aviso.</p></div>
+    <div class="acoes-bloco"><button class="btn prim" id="au-salvar">Salvar automação</button></div>
+  </section>`;
+}
+
+function ligarAutomacaoAjustes() {
+  $("#au-salvar").onclick = async () => {
+    const ini = valor("au-inicio");
+    const fim = valor("au-fim");
+    if (ini && fim && ini >= fim) return aviso("O horário de término precisa ser depois do início", true);
+    await salvarConfig(
+      {
+        automacao_ligada: $("#au-ligada").checked ? "1" : "0",
+        hora_inicio: ini,
+        hora_fim: fim,
+        novos_por_dia: valor("au-novos"),
+        envios_por_dia: valor("au-envios"),
+        intervalo_min: valor("au-intervalo"),
+        verificacoes_por_dia: valor("au-verif"),
+        followup1_dias_uteis: valor("au-f1"),
+        followup2_dias: valor("au-f2"),
+        sem_resposta_dias_uteis: valor("au-sr"),
+        outro_momento_dias: valor("au-om"),
+        encerrar_dias: valor("au-enc"),
+        feriados_extras: valor("au-feriados"),
+        rodape_descadastro: valor("au-rodape"),
+      },
+      "Automação salva"
+    );
+  };
+}
+
+// ---------- Mensagens da automação
+const PASSOS_MSG = [
+  ["primeiro_contato", "Primeiro contato", "Entra na fila de aprovação já preenchido. Você revisa e ajusta antes de sair."],
+  ["followup_1", "Follow-up", "Se não houver resposta ao primeiro contato."],
+  ["followup_2", "Nova tentativa", "Se não houver resposta ao follow-up."],
+  ["outro_momento", "Retomada", "Meses depois, para quem foi para Outro momento."],
+];
+const VARIAVEIS = [
+  ["{saudacao}", "“Olá, João” (ou “Olá”, sem nome)"],
+  ["{nome}", "primeiro nome do sócio ou do contato"],
+  ["{empresa}", "nome fantasia"],
+  ["{razao_social}", "razão social"],
+  ["{cidade}", "cidade"],
+  ["{segmento}", "atividade (CNAE)"],
+];
+const EXEMPLO_VARS = { saudacao: "Olá, João", nome: "João", empresa: "Padaria Pão Bom", razao_social: "Pão Bom Padaria LTDA", cidade: "Sorocaba", segmento: "Padaria e confeitaria", socio: "João" };
+const exemplo = (texto) =>
+  String(texto || "")
+    .replace(/\{(\w+)\}/g, (t, k) => (k in EXEMPLO_VARS ? EXEMPLO_VARS[k] : t))
+    .replace(/[ \t]+([,.!?])/g, "$1");
+
+function blocoMensagens(cfg) {
+  const modelos = E.resumo.modelos || [];
+  return `<section class="bloco" id="aj-mensagens">
+    <h2>Mensagens da automação</h2>
+    <p>Os textos padrão de cada passo. Os campos entre chaves são preenchidos com os dados de cada empresa.</p>
+    <div class="var-chips">${VARIAVEIS.map(([v, d]) => `<button type="button" class="pilula" data-var="${v}" title="${esc(d)}">${v}</button>`).join("")}</div>
+    <p class="dica">Toque num campo para inserir no texto em que você está escrevendo.</p>
+    ${PASSOS_MSG.map(([passo, nome, desc]) => {
+      const m = modelos.find((x) => x.passo === passo);
+      return `<div class="msg-modelo" data-passo="${passo}" data-id="${m?.id || ""}">
+        <div class="t"><strong>${nome}</strong><span class="dica">${desc}</span></div>
+        <textarea class="entrada" rows="4" id="mm-${passo}">${esc(m?.texto || "")}</textarea>
+        <div class="previa"><span class="rotulo">Exemplo</span><div class="balao-prev" id="mp-${passo}"></div></div>
+        <div class="acoes-bloco"><button class="btn peq prim" data-salvar-msg="${passo}">Salvar</button></div>
+      </div>`;
+    }).join("")}
+  </section>`;
+}
+
+function ligarMensagens(cfg) {
+  let ultimo = null;
+  const previa = (passo) => {
+    const t = valor(`mm-${passo}`);
+    const rod = passo === "primeiro_contato" && cfg.rodape_descadastro ? `\n\n${cfg.rodape_descadastro}` : "";
+    $(`#mp-${passo}`).textContent = t.trim() ? exemplo(t) + rod : "(vazio — este passo fica parado)";
+  };
+  PASSOS_MSG.forEach(([passo]) => {
+    const ta = $(`#mm-${passo}`);
+    previa(passo);
+    ta.addEventListener("input", () => previa(passo));
+    ta.addEventListener("focus", () => (ultimo = ta));
+  });
+  $(".var-chips").onclick = (ev) => {
+    const b = ev.target.closest("[data-var]");
+    if (!b) return;
+    const ta = ultimo || $("#mm-primeiro_contato");
+    const ini = ta.selectionStart ?? ta.value.length;
+    const fim = ta.selectionEnd ?? ta.value.length;
+    ta.value = ta.value.slice(0, ini) + b.dataset.var + ta.value.slice(fim);
+    ta.focus();
+    ta.setSelectionRange(ini + b.dataset.var.length, ini + b.dataset.var.length);
+    ta.dispatchEvent(new Event("input"));
+  };
+  $("#aj-mensagens").addEventListener("click", async (ev) => {
+    const b = ev.target.closest("[data-salvar-msg]");
+    if (!b) return;
+    const passo = b.dataset.salvarMsg;
+    const caixa = b.closest(".msg-modelo");
+    const texto = valor(`mm-${passo}`).trim();
+    if (!texto && !(await confirmar("Deixar vazio?", "Sem texto, este passo da automação fica parado (os contatos nele são pausados).", "Deixar vazio", true))) return;
+    try {
+      const id = caixa.dataset.id;
+      if (id) await api(`data/modelos/${id}`, { method: "PATCH", body: { texto } });
+      else {
+        const r = await api("data/modelos", { method: "POST", body: { titulo: `Automação · ${PASSOS_MSG.find((p) => p[0] === passo)[1]}`, texto: texto || " ", passo } });
+        caixa.dataset.id = r.id;
+      }
+      await carregarResumo();
+      aviso("Mensagem salva");
+    } catch (e) {
+      aviso(e.message, true);
+    }
+  });
+}
+
+// ---------- Relógio
+function blocoRelogio(cfg) {
+  return `<section class="bloco" id="aj-relogio">
+    <h2>Relógio dos envios</h2>
+    <p>A cada 2 minutos, a VPS chama o sistema para enviar o que estiver na hora (já vem no script de instalação). Sem o relógio, nada sai sozinho.</p>
+    <div class="status-linha" id="rl-status">${statusRelogio(cfg.ultimo_relogio)}</div>
+    <div class="acoes-bloco"><button class="btn" id="rl-agora">Rodar agora</button></div>
+    <details class="sub-det"><summary>Endereço e chave do relógio</summary>
+      <dl class="dl"><dt>URL</dt><dd><code>${esc(ORIGEM)}/api/automacao/tick</code> (POST)</dd><dt>Cabeçalho</dt><dd><code>x-relogio-chave: ${esc(cfg.relogio_chave)}</code></dd></dl>
+    </details>
+  </section>`;
+}
+
+function statusRelogio(ultimo) {
+  if (!ultimo) return `<span class="selo aviso">Ainda não rodou</span> Ele começa quando a VPS estiver instalada.`;
+  const min = (Date.now() - Date.parse(ultimo)) / 60000;
+  return min > 10
+    ? `<span class="selo perigo">Parado</span> Última vez ${esc(quando(ultimo))}. Confira se a VPS está ligada.`
+    : `<span class="selo ok">${ico("check")}Funcionando</span> Última vez ${esc(quando(ultimo))}.`;
+}
+
+function ligarRelogio() {
+  $("#rl-agora").onclick = async (ev) => {
+    const b = ev.currentTarget;
+    b.disabled = true;
+    try {
+      const r = await api("automacao/tick", { method: "POST" });
+      $("#rl-status").innerHTML = statusRelogio(r.agora);
+      const partes = [];
+      if (r.enviados) partes.push(plural(r.enviados, "mensagem enviada", "mensagens enviadas"));
+      if (r.movidos) partes.push(plural(r.movidos, "negócio movido", "negócios movidos"));
+      if (r.verificacao?.verificados) partes.push(plural(r.verificacao.verificados, "número conferido", "números conferidos"));
+      aviso(partes.length ? partes.join(" · ") : r.motivo || "Nada para fazer agora");
+      if (partes.length) checarNovidades(true);
+    } catch (e) {
+      aviso(e.message, true);
+    }
+    b.disabled = false;
+  };
+}
+
+// ---------- Formulário do site e rastreamento
+function blocoSite(cfg) {
+  return `<section class="bloco" id="aj-site">
+    <h2>Formulário do site</h2>
+    <p>O botão de WhatsApp do site, o mesmo do CRM antigo. Quem preenche entra no funil na etapa de conversa, com a origem (Google Ads, Meta, Instagram, busca…).</p>
+    <div class="grade-2">
+      ${campo("st-numero", "WhatsApp que recebe", cfg.site_wa_numero ? fmtTel(cfg.site_wa_numero) : "", 'inputmode="tel" placeholder="(15) 99999-9999"')}
+      <div class="campo"><label for="st-cor">Cor do botão</label><input id="st-cor" type="color" class="cor" value="${esc(cfg.widget_cor || "#25D366")}"></div>
+    </div>
+    ${campo("st-rotulo", "Texto do botão", cfg.widget_rotulo)}
+    ${campo("st-titulo", "Título do formulário", cfg.widget_titulo)}
+    ${campo("st-intro", "Texto do formulário", cfg.widget_intro)}
+    ${campo("st-modelo", "Mensagem que abre no WhatsApp", cfg.site_wa_modelo, "", "{nome} e {busca} são trocados pelo que a pessoa escreveu.")}
+    <h3 class="sub">Instalar no site</h3>
+    <p class="dica">Troque, no site, o endereço do script do CRM antigo por este (antes de &lt;/body&gt; ou no Google Tag Manager, numa tag de HTML personalizado):</p>
+    <pre class="codigo" id="st-script">&lt;script src="${esc(ORIGEM)}/widget.js" defer&gt;&lt;/script&gt;</pre>
+    <div class="acoes-bloco"><button class="btn" data-copiar="st-script">${ico("copiar")} Copiar</button><a class="btn" href="/teste.html" target="_blank" rel="noopener">Abrir página de teste</a></div>
+    <p class="dica">Qualquer botão do site abre o formulário com <code>data-crm-open</code> (opcional: <code>data-crm-interest="Branding"</code>). Sem o botão flutuante: <code>data-float="false"</code> no script.</p>
+    <h3 class="sub">Meta (Pixel e API de Conversões)</h3>
+    <div class="grade-2">
+      ${campo("st-pixel", "ID do Pixel", cfg.meta_pixel, 'inputmode="numeric"')}
+      ${campo("st-teste", "Código de teste (opcional)", cfg.meta_teste, 'autocapitalize="off"')}
+    </div>
+    ${campo("st-token", "Token da API de Conversões", cfg.meta_token, 'type="password" autocomplete="off"', cfg.meta_ultimo ? `Último envio: ${esc(cfg.meta_ultimo)}` : "")}
+    <h3 class="sub">Google Analytics 4</h3>
+    <div class="grade-2">
+      ${campo("st-ga4", "ID de métricas", cfg.ga4_id, 'placeholder="G-XXXXXXX" autocapitalize="characters"')}
+      ${campo("st-ga4s", "Chave secreta da API", cfg.ga4_segredo, 'type="password" autocomplete="off"')}
+    </div>
+    <h3 class="sub">Google Ads (conversões offline)</h3>
+    ${campo("st-gads", "Nome da conversão no Google Ads", cfg.gads_conv)}
+    <div class="grade-2">
+      ${campo("st-de", "Vendas de", new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10), 'type="date"')}
+      ${campo("st-ate", "até", hojeISO(), 'type="date"')}
+    </div>
+    <div class="acoes-bloco"><button class="btn" id="st-csv">${ico("baixar")} Baixar CSV para o Google Ads</button><button class="btn prim" id="st-salvar">Salvar</button></div>
+  </section>`;
+}
+
+function ligarSite() {
+  $("#st-salvar").onclick = () =>
+    salvarConfig(
+      {
+        site_wa_numero: valor("st-numero"),
+        widget_cor: valor("st-cor"),
+        widget_rotulo: valor("st-rotulo"),
+        widget_titulo: valor("st-titulo"),
+        widget_intro: valor("st-intro"),
+        site_wa_modelo: valor("st-modelo"),
+        meta_pixel: valor("st-pixel"),
+        meta_teste: valor("st-teste"),
+        meta_token: valor("st-token"),
+        ga4_id: valor("st-ga4"),
+        ga4_segredo: valor("st-ga4s"),
+        gads_conv: valor("st-gads"),
+      },
+      "Formulário e rastreamento salvos"
+    );
+  $("#st-csv").onclick = () => baixarArquivo(`data/export/gads?de=${valor("st-de")}&ate=${valor("st-ate")}`, `conversoes-google-ads-${hojeISO()}.csv`);
+}
+
+// download de arquivo da API (com a chave de acesso)
+async function baixarArquivo(caminho, nome) {
+  try {
+    const headers = {};
+    const chave = ler("prosp.chave");
+    if (chave) headers["x-access-key"] = chave;
+    const r = await fetch(`/api/${caminho}`, { headers });
+    if (!r.ok) throw new Error(`Erro ${r.status}`);
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = nome;
+    document.body.append(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 1000);
+  } catch (e) {
+    aviso(e.message, true);
+  }
+}
+
+// ---------- IA
+function blocoIA(cfg) {
+  return `<section class="bloco" id="aj-ia">
+    <h2>IA para classificar respostas (opcional)</h2>
+    <p>Separa resposta automática (“Obrigado pelo contato, em breve retornaremos”) de resposta de pessoa. As regras do sistema resolvem a maioria; a IA só entra nos casos duvidosos. Sem chave, vale só a regra.</p>
+    <div class="grade-2">
+      ${campo("ia-chave", "Chave da API da Anthropic", cfg.ia_chave, 'type="password" autocomplete="off" placeholder="sk-ant-…"')}
+      ${campo("ia-modelo", "Modelo", cfg.ia_modelo, 'autocapitalize="off"')}
+    </div>
+    <div class="acoes-bloco"><button class="btn prim" id="ia-salvar">Salvar</button></div>
+  </section>`;
+}
+function ligarIA() {
+  $("#ia-salvar").onclick = () => salvarConfig({ ia_chave: valor("ia-chave"), ia_modelo: valor("ia-modelo") || "claude-haiku-5-5" }, "IA salva");
+}
+
+// ---------- Etapas
+function blocoEtapas() {
+  return `<section class="bloco" id="aj-etapas">
+    <h2>Etapas do funil</h2>
+    <p>Renomeie e reordene à vontade. A <strong>função</strong> diz à automação o que cada etapa significa (ex.: em qual etapa entra quem respondeu).</p>
+    <div id="etapas"></div>
+    <div class="acoes-bloco">
+      <button class="btn" id="etapa-nova">${ico("mais")} Nova etapa</button>
+      <button class="btn prim" id="etapas-salvar">Salvar etapas</button>
+    </div>
+  </section>`;
+}
+
+function ligarEtapas() {
+  const PAPEIS = E.resumo.papeis || {};
   let etapas = E.resumo.etapas.map((e) => ({ ...e }));
-  const desenharEtapas = () => {
+  const desenhar = () => {
     $("#etapas").innerHTML = etapas
       .map(
         (e, i) => `<div class="etapa-linha" data-i="${i}">
@@ -1835,6 +3455,10 @@ function telaAjustes(main) {
             <option value="ganho" ${e.tipo === "ganho" ? "selected" : ""}>Venda ganha</option>
             <option value="perdido" ${e.tipo === "perdido" ? "selected" : ""}>Perdida</option>
           </select>
+          <select class="entrada" data-c="papel" aria-label="Função na automação">
+            <option value="">Sem função</option>
+            ${Object.entries(PAPEIS).map(([k, v]) => `<option value="${k}" ${e.papel === k ? "selected" : ""}>${esc(v)}</option>`).join("")}
+          </select>
           <div class="linha">
             <button class="btn ico-btn peq" data-m="-1" ${i === 0 ? "disabled" : ""} aria-label="Subir">↑</button>
             <button class="btn ico-btn peq" data-m="1" ${i === etapas.length - 1 ? "disabled" : ""} aria-label="Descer">↓</button>
@@ -1844,12 +3468,13 @@ function telaAjustes(main) {
       )
       .join("");
   };
-  desenharEtapas();
+  desenhar();
   $("#etapas").oninput = (ev) => {
     const linha = ev.target.closest(".etapa-linha");
     const c = ev.target.dataset.c;
-    if (linha && c) etapas[Number(linha.dataset.i)][c] = ev.target.value;
+    if (linha && c) etapas[Number(linha.dataset.i)][c] = ev.target.value || (c === "papel" ? null : ev.target.value);
   };
+  $("#etapas").onchange = $("#etapas").oninput;
   $("#etapas").onclick = (ev) => {
     const linha = ev.target.closest(".etapa-linha");
     if (!linha) return;
@@ -1858,32 +3483,49 @@ function telaAjustes(main) {
     if (m) {
       const j = i + Number(m.dataset.m);
       [etapas[i], etapas[j]] = [etapas[j], etapas[i]];
-      desenharEtapas();
+      desenhar();
     }
     if (ev.target.closest("[data-x]")) {
       if (etapas.length === 1) return aviso("O funil precisa de ao menos uma etapa", true);
       etapas.splice(i, 1);
-      desenharEtapas();
+      desenhar();
     }
   };
   $("#etapa-nova").onclick = () => {
     const ultimaAberta = etapas.map((e) => e.tipo).lastIndexOf("aberta");
-    etapas.splice(ultimaAberta + 1, 0, { nome: "Nova etapa", cor: corAleatoria(), tipo: "aberta" });
-    desenharEtapas();
+    etapas.splice(ultimaAberta + 1, 0, { nome: "Nova etapa", cor: corAleatoria(), tipo: "aberta", papel: null });
+    desenhar();
   };
   $("#etapas-salvar").onclick = async () => {
+    const usados = etapas.map((e) => e.papel).filter(Boolean);
+    const repetido = usados.find((p, i) => usados.indexOf(p) !== i);
+    if (repetido) return aviso(`Duas etapas com a função “${PAPEIS[repetido]}”`, true);
+    const faltam = ["entrada", "contato", "conversa", "outro_momento", "perdido"].filter((p) => !usados.includes(p));
+    if (faltam.length && !(await confirmar("Funções sem etapa", `A automação precisa destas funções: ${faltam.map((p) => PAPEIS[p]).join(", ")}. Sem elas, parte da sequência não move os cards. Salvar mesmo assim?`, "Salvar"))) return;
     try {
       E.resumo.etapas = await api("data/etapas", { method: "PUT", body: { etapas } });
       etapas = E.resumo.etapas.map((e) => ({ ...e }));
-      desenharEtapas();
+      desenhar();
       aviso("Etapas salvas");
     } catch (e) {
       aviso(e.message, true);
     }
   };
+}
 
-  const desenharModelos = () => {
-    const ms = E.resumo.modelos || [];
+// ---------- Modelos manuais
+function blocoModelos() {
+  return `<section class="bloco" id="aj-modelos">
+    <h2>Modelos de mensagem</h2>
+    <p>Para responder rápido pela ficha (WhatsApp e e-mail). Use {saudacao}, {nome}, {empresa}, {razao_social}, {cidade}, {segmento} e {socio}.</p>
+    <div id="modelos"></div>
+    <button class="btn" id="modelo-novo">${ico("mais")} Novo modelo</button>
+  </section>`;
+}
+
+function ligarModelos() {
+  const desenhar = () => {
+    const ms = (E.resumo.modelos || []).filter((m) => !m.passo);
     $("#modelos").innerHTML = ms.length
       ? ms
           .map(
@@ -1895,12 +3537,12 @@ function telaAjustes(main) {
           .join("")
       : `<p class="muted">Nenhum modelo ainda.</p>`;
   };
-  desenharModelos();
-  const editarModelo = async (m) => {
+  desenhar();
+  const editar = async (m) => {
     const r = await abrirModal({
       titulo: m ? "Editar modelo" : "Novo modelo",
       corpo: `<div class="campo"><label for="m-t">Título</label><input id="m-t" class="entrada" value="${esc(m?.titulo || "")}" maxlength="80"></div>
-        <div class="campo"><label for="m-x">Mensagem</label><textarea id="m-x" class="entrada" rows="5" placeholder="Olá, tudo bem? Aqui é…">${esc(m?.texto || "")}</textarea></div>`,
+        <div class="campo"><label for="m-x">Mensagem</label><textarea id="m-x" class="entrada" rows="5" placeholder="{saudacao}, tudo bem? Aqui é…">${esc(m?.texto || "")}</textarea></div>`,
       botoes: [
         { rotulo: "Cancelar", valor: null },
         {
@@ -1920,41 +3562,39 @@ function telaAjustes(main) {
       if (m) await api(`data/modelos/${m.id}`, { method: "PATCH", body: r });
       else await api("data/modelos", { method: "POST", body: r });
       await carregarResumo();
-      desenharModelos();
+      desenhar();
     } catch (e) {
       aviso(e.message, true);
     }
   };
-  $("#modelo-novo").onclick = () => editarModelo(null);
+  $("#modelo-novo").onclick = () => editar(null);
   $("#modelos").onclick = async (ev) => {
     const ed = ev.target.closest("[data-ed]");
     const del = ev.target.closest("[data-del]");
-    if (ed) editarModelo(E.resumo.modelos.find((m) => m.id === Number(ed.dataset.ed)));
+    if (ed) editar(E.resumo.modelos.find((m) => m.id === Number(ed.dataset.ed)));
     if (del) {
       if (!(await confirmar("Apagar modelo", "Apagar este modelo de mensagem?", "Apagar", true))) return;
       await api(`data/modelos/${del.dataset.del}`, { method: "DELETE" });
       await carregarResumo();
-      desenharModelos();
+      desenhar();
     }
   };
+}
 
-  $("#backup").onclick = async () => {
-    try {
-      const dados = await api("data/backup");
-      const blob = new Blob([JSON.stringify(dados, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `prospeccao-backup-${hojeISO()}.json`;
-      document.body.append(a);
-      a.click();
-      setTimeout(() => {
-        URL.revokeObjectURL(a.href);
-        a.remove();
-      }, 1000);
-    } catch (e) {
-      aviso(e.message, true);
-    }
-  };
+// ---------- Cópia de segurança e acesso
+function blocoBackup() {
+  return `<section class="bloco" id="aj-backup">
+    <h2>Cópia de segurança</h2>
+    <p>Baixa listas, funil, anotações, conversas e modelos em um arquivo JSON (sem senhas e chaves).</p>
+    <button class="btn" id="backup">${ico("baixar")} Baixar cópia</button>
+    <h3 class="sub">Acesso neste aparelho</h3>
+    <p class="dica">A chave de acesso fica salva neste navegador. Use em aparelho compartilhado.</p>
+    <button class="btn" id="sair">Esquecer a chave neste aparelho</button>
+  </section>`;
+}
+
+function ligarBackup() {
+  $("#backup").onclick = () => baixarArquivo("data/backup", `prospeccao-backup-${hojeISO()}.json`);
   $("#sair").onclick = () => {
     try {
       localStorage.removeItem("prosp.chave");
@@ -1967,4 +3607,5 @@ function telaAjustes(main) {
 (async function iniciar() {
   await carregarResumo();
   renderizar();
+  checarNovidades(true);
 })();
