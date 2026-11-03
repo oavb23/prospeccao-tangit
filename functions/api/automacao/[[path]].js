@@ -45,7 +45,8 @@ export async function onRequest({ request, env, params }) {
   try {
     if (rota === "tick" && (metodo === "POST" || metodo === "GET")) {
       const cfg = await lerConfig(db);
-      const chaveRelogio = request.headers.get("x-relogio-chave") || url.searchParams.get("chave") || "";
+      // so no header: na query string a chave ficava gravada em log de URL
+      const chaveRelogio = request.headers.get("x-relogio-chave") || "";
       const chaveTela = request.headers.get("x-access-key") || "";
       const autorizado = (cfg.relogio_chave && chaveRelogio === cfg.relogio_chave) || (env.ACCESS_KEY && chaveTela === env.ACCESS_KEY);
       if (!autorizado) return erro("Chave do relógio inválida.", 401);

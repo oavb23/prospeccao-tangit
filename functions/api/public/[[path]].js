@@ -18,6 +18,24 @@ const J = (d, s = 200, h = {}) =>
   new Response(JSON.stringify(d), { status: s, headers: { "content-type": "application/json; charset=utf-8", ...CORS, ...h } });
 const digitos = (s) => String(s ?? "").replace(/\D/g, "");
 const rand = (n = 8) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, "0")).join("");
+// Limite do formulario publico: a rota grava no banco sem autenticacao, entao
+// sem teto da para inundar o CRM com contatos falsos e queimar a cota do D1.
+const LEAD_MAX_HORA = 5;
+
+async function dentroDoLimite(db, ip) {
+  if (!ip) return true;
+  const janela = Math.floor(Date.now() / 3600000);
+  const r = await db.prepare("SELECT n, janela FROM lead_limite WHERE ip = ?").bind(ip).first();
+  const n = r && Number(r.janela) === janela ? Number(r.n) : 0;
+  if (n >= LEAD_MAX_HORA) return false;
+  await db
+    .prepare(`INSERT INTO lead_limite (ip, n, janela) VALUES (?, ?, ?)
+              ON CONFLICT(ip) DO UPDATE SET n = excluded.n, janela = excluded.janela`)
+    .bind(ip, n + 1, janela)
+    .run();
+  return true;
+}
+
 const com55 = (p) => {
   const d = digitos(p);
   return d && d.length <= 11 ? "55" + d : d;
@@ -57,6 +75,8 @@ export async function onRequest(ctx) {
       d = JSON.parse((await req.text()) || "{}");
     } catch {}
     if (d.hp) return J({ ok: true }); // robôs
+    if (!(await dentroDoLimite(db, req.headers.get("cf-connecting-ip") || "")))
+      return J({ ok: false, error: "Muitos envios seguidos. Tente de novo mais tarde." }, 429);
     const nome = String(d.name || "").trim().slice(0, 120);
     const fone = digitos(d.phone).slice(0, 13);
     const interesse = String(d.interest || "").trim().slice(0, 1000);

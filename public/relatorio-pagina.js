@@ -284,4 +284,4 @@ export function slugCliente(nome) {
   const corte = s.slice(0, 40);
   return corte.includes("-") ? corte.slice(0, corte.lastIndexOf("-")) : corte;
 }
-export const PADRAO_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*-relatorio-\d{6}$/;
+export const PADRAO_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*-relatorio-(?:\d{6}|\d{12})$/;
